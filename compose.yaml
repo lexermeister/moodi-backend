@@ -1,0 +1,15 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      RECORDINGS_DIR: /app/data/recordings
+      MAX_UPLOAD_MB: 100
+    volumes:
+      - moodi_recordings:/app/data/recordings
+
+volumes:
+  moodi_recordings:
+

@@ -1,48 +1,383 @@
 # Moodi backend
 
-Small FastAPI service that accepts audio recordings from the Moodi mobile app and saves them
-locally. This first milestone supports M4A, AAC, and WAV uploads and does not perform any
-downstream audio processing.
+Moodi is a small FastAPI service that receives audio recordings from the Moodi mobile app and
+saves them to local storage. The upload response is returned only after the file has been written
+and finalized successfully.
 
-## Setup
+This first milestone intentionally has no authentication, database, Supabase integration,
+transcription, queue, worker, or AI processing.
 
-Requirements: Python 3.13 and [uv](https://docs.astral.sh/uv/).
+## What is implemented
+
+- `GET /health` for service health checks.
+- `POST /recordings` for multipart audio uploads.
+- M4A, AAC, and WAV extension and MIME-type screening.
+- UUID-based server filenames; client filenames are never used as filesystem paths.
+- Chunked copying so the complete upload is not loaded into application memory.
+- Configurable upload-size enforcement with HTTP `413` responses.
+- Empty-upload rejection.
+- Temporary-file writing and atomic finalization.
+- Partial-file cleanup after failed uploads.
+- Environment-based settings with `.env` support.
+- Pytest coverage for the health endpoint and upload behavior.
+- Ruff linting and formatting.
+- Docker and Docker Compose support with persistent local recording storage.
+- GitHub Actions checks for tests, linting, and formatting.
+
+File extensions and MIME types are only basic screening. They do not prove that an uploaded file
+contains valid audio.
+
+## Project layout
+
+```text
+app/
+  main.py                  FastAPI application and startup lifecycle
+  api/
+    health.py              Health endpoint
+    recordings.py          Recording upload endpoint
+  core/
+    config.py              Environment-backed settings
+  schemas/
+    recordings.py          Recording response model
+  services/
+    recording_storage.py   Upload validation and filesystem storage
+tests/                     Automated tests
+Dockerfile                 Production container image
+compose.yaml               Local container setup and recordings volume
+```
+
+## Configuration
+
+Copy the example settings for local development:
 
 ```bash
 cp .env.example .env
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `APP_ENV` | `development` | Identifies the running environment. |
+| `RECORDINGS_DIR` | `./data/recordings` | Directory where finalized recordings are stored. |
+| `MAX_UPLOAD_MB` | `100` | Maximum accepted upload size in MiB. |
+| `PORT` | `8000` in Docker | HTTP port used by the container. Hosting platforms can override it. |
+
+Relative recording paths are resolved against the repository root. The application creates the
+recordings directory during startup.
+
+Never commit `.env`; it is intentionally ignored by Git and Docker.
+
+## Run locally with Python
+
+Requirements:
+
+- Python 3.13
+- [uv](https://docs.astral.sh/uv/)
+
+Install the locked dependencies:
+
+```bash
 uv sync --locked
 ```
 
-Relative `RECORDINGS_DIR` values are resolved from the repository root. The directory is created
-when the application starts.
-
-## Start the API
+Start the development server:
 
 ```bash
 uv run uvicorn app.main:app --reload
 ```
 
-The API is available at `http://127.0.0.1:8000`. Check it with:
+The API is available at `http://127.0.0.1:8000`.
 
-```bash
-curl http://127.0.0.1:8000/health
+- Health check: `http://127.0.0.1:8000/health`
+- Interactive API documentation: `http://127.0.0.1:8000/docs`
+
+Stop the server with `Ctrl+C`.
+
+## API
+
+### Health check
+
+```http
+GET /health
 ```
 
-## Upload a recording
+Successful response (`200`):
+
+```json
+{
+  "status": "ok"
+}
+```
+
+### Upload a recording
+
+```http
+POST /recordings
+Content-Type: multipart/form-data
+```
+
+The multipart request must contain a field named `file`. Supported extensions are `.m4a`, `.aac`,
+and `.wav`, with a matching audio MIME type.
+
+Example:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/recordings \
   -F "file=@/path/to/recording.m4a;type=audio/mp4"
 ```
 
-The request returns only after the recording has been written and finalized in the configured
-storage directory.
+Successful response (`201`):
 
-## Verify changes
+```json
+{
+  "id": "8fb3c678-5b52-4a57-b51d-a8d0b77ae193",
+  "filename": "8fb3c678-5b52-4a57-b51d-a8d0b77ae193.m4a",
+  "size_bytes": 12345,
+  "status": "saved"
+}
+```
+
+Important error responses:
+
+| Status | Meaning |
+| --- | --- |
+| `400` | The uploaded file is empty. |
+| `413` | The upload exceeds `MAX_UPLOAD_MB`. |
+| `415` | The extension or MIME type is unsupported or mismatched. |
+| `422` | The required multipart `file` field is missing. |
+| `500` | The recording could not be saved. |
+
+### How an upload is stored
+
+The upload request is handled synchronously from the mobile client's perspective:
+
+1. FastAPI receives the multipart `file` field as an `UploadFile`.
+2. The extension and MIME type are checked against the supported M4A, AAC, and WAV values.
+3. The server generates a UUID and uses it for both the recording ID and stored filename.
+4. The client filename is used only to read its extension; it is never used as a path.
+5. The upload is copied in 1 MiB chunks to a hidden temporary file.
+6. The configured size limit is checked while chunks are copied.
+7. Empty and oversized uploads are rejected and their temporary files are removed.
+8. A successful write is flushed and synchronized to disk.
+9. The temporary file is atomically renamed to its final UUID filename.
+10. Only then does the endpoint return HTTP `201` with `status: saved`.
+
+The request flow stays intentionally simple:
+
+```text
+HTTP request -> API route -> recording storage service -> response schema
+```
+
+## Run with Docker Compose
+
+Build and start the API:
+
+```bash
+docker compose up --build
+```
+
+Check it from another terminal:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Compose stores recordings in the named volume `moodi-backend_moodi_recordings`, mounted at
+`/app/data/recordings`. The recordings survive container replacement and normal shutdowns.
+
+Stop the service while preserving its recordings:
+
+```bash
+docker compose down
+```
+
+To deliberately remove the containers **and all recordings in the named volume**:
+
+```bash
+docker compose down --volumes
+```
+
+## Build and run the Docker image directly
+
+```bash
+docker build -t moodi-backend .
+docker run --rm \
+  --name moodi-backend \
+  -p 8000:8000 \
+  -e APP_ENV=development \
+  -e RECORDINGS_DIR=/app/data/recordings \
+  -e MAX_UPLOAD_MB=100 \
+  -v moodi_recordings:/app/data/recordings \
+  moodi-backend
+```
+
+The image:
+
+- Uses Python 3.13 slim.
+- Installs production dependencies from the committed `uv.lock`.
+- Excludes tests, caches, recordings, IDE files, Git metadata, and `.env` from its build context.
+- Listens on the platform-provided `PORT`, falling back to `8000`.
+- Includes a Docker health check for `/health`.
+
+## Deployment options for testing
+
+The current milestone stores files on a local filesystem. A hosted deployment therefore needs a
+persistent volume mounted at `/app/data/recordings`. Without a volume, recordings disappear when
+the container restarts or is redeployed.
+
+### Railway — recommended for the first shared test environment
+
+Railway automatically detects a root `Dockerfile` and supports persistent volumes on its trial,
+Free, and paid plans.
+
+1. Create a Railway project from the GitHub repository.
+2. Let Railway build the detected `Dockerfile`.
+3. Add a volume to the service and mount it at `/app/data/recordings`.
+4. Set `APP_ENV=testing`, `RECORDINGS_DIR=/app/data/recordings`, and `MAX_UPLOAD_MB=100`.
+5. Generate a public domain for the service.
+6. Use `/health` as the health-check path.
+
+Railway currently offers a 30-day trial with a one-time $5 credit, followed by a Free plan with
+limited monthly credit and 0.5 GB of volume storage. See the official
+[Railway pricing](https://docs.railway.com/pricing/plans),
+[Dockerfile](https://docs.railway.com/builds/dockerfiles), and
+[volume](https://docs.railway.com/volumes) documentation.
+
+### Render — simple, but persistent uploads require a paid service
+
+Render can deploy the Dockerfile as a web service. Its free web services are useful for checking
+the API, but do not support persistent disks, so uploaded recordings can disappear after a restart
+or deploy. For recording persistence, use a paid service with a disk mounted at
+`/app/data/recordings` and set `RECORDINGS_DIR` to the same path.
+
+See Render's official [Docker](https://render.com/docs/docker),
+[free service](https://render.com/docs/free), and
+[persistent disk](https://render.com/docs/disks) documentation.
+
+### Fly.io — inexpensive persistent VM and volume
+
+Fly.io is a good option when more infrastructure control is useful. Deploy the Docker image with a
+small Fly Machine and mount a Fly Volume at `/app/data/recordings`. It requires a little more CLI
+configuration than Railway. Fly currently lists shared compute starting around a few dollars per
+month and persistent volumes at $0.15 per GB per month.
+
+See the official [Fly.io pricing](https://fly.io/pricing/) and
+[volume pricing](https://fly.io/docs/about/pricing/) documentation.
+
+### Google Cloud Run — use later with object storage
+
+Cloud Run is attractive for stateless, scale-to-zero APIs and includes a usage-based free tier.
+It is not the simplest match for this milestone's local-file storage. Use it after recordings are
+moved to object storage such as Google Cloud Storage, or after explicitly configuring a supported
+volume mount.
+
+See the official [Cloud Run pricing](https://cloud.google.com/run/pricing) and
+[container runtime contract](https://docs.cloud.google.com/run/docs/container-contract).
+
+### Storage and scaling limitation
+
+A single local volume is appropriate for development and a small test environment. It ties the
+service to one persistent filesystem and is not a good foundation for horizontal scaling. Before
+running multiple replicas or moving to production, recordings should be stored in object storage
+such as S3, Cloudflare R2, Google Cloud Storage, or Supabase Storage.
+
+## Development guidelines
+
+Keep this backend easy to understand and maintain, especially for contributors who are new to
+Python.
+
+- Prefer straightforward code over clever abstractions.
+- Keep API routes small: validate HTTP input, call a service, map known errors, and return a
+  response model.
+- Put filesystem and business behavior in `app/services/`.
+- Keep environment-backed configuration in `app/core/config.py`.
+- Put Pydantic request and response models in `app/schemas/`.
+- Use type hints for function parameters and return values.
+- Use `pathlib.Path` for filesystem paths.
+- Prefer a function over a class when no state or clear object boundary is needed.
+- Use synchronous code unless a measured requirement needs background processing.
+- Do not add a database, queue, worker, authentication system, or cloud service prematurely.
+- Avoid new dependencies when the standard library or an existing dependency is clear enough.
+- Follow nearby code patterns instead of introducing a second way to solve the same problem.
+- Let Ruff handle formatting rather than formatting code manually.
+
+When adding or changing an endpoint:
+
+1. Add or update the route in `app/api/`.
+2. Add schemas in `app/schemas/` when needed.
+3. Put non-HTTP behavior in `app/services/`.
+4. Register a new router in `app/main.py` if necessary.
+5. Test the successful path and important failures.
+6. Update this README when behavior, configuration, setup, or deployment changes.
+
+### Dependency commands
+
+Use uv for dependency management:
+
+```bash
+uv add package-name
+uv add --dev package-name
+uv remove package-name
+uv sync --locked
+```
+
+Commit both `pyproject.toml` and `uv.lock` whenever dependencies change.
+
+## Test coverage
+
+The current test suite verifies:
+
+- The health endpoint returns HTTP `200` and `{"status": "ok"}`.
+- A successful upload returns HTTP `201` and saves the exact uploaded bytes.
+- The multipart `file` field is required.
+- Empty uploads are rejected and leave no file behind.
+- Oversized uploads return HTTP `413` and their partial files are removed.
+- A malicious client filename cannot escape the recordings directory.
+
+Tests use a temporary recordings directory and do not write into the development storage folder.
+
+## Verification
+
+Run all checks before committing:
 
 ```bash
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
+docker compose config
+docker build -t moodi-backend:test .
 ```
+
+The GitHub Actions workflow runs pytest, Ruff linting, and Ruff formatting checks for pushes and
+pull requests.
+
+If Ruff reports formatting changes, apply them with:
+
+```bash
+uv run ruff format .
+```
+
+Before committing, confirm that:
+
+- The change solves one clear problem.
+- Tests cover its behavior and important errors.
+- All verification commands pass.
+- No `.env`, recording, cache, IDE, or secret file is staged.
+- `git status` contains only files intended for the commit.
+- This README reflects any user-visible or operational changes.
+
+## Current milestone boundaries
+
+This repository currently provides durable local recording ingestion only. These features are
+deliberately deferred:
+
+- User authentication and authorization.
+- Database metadata and recording ownership.
+- Supabase or other object storage.
+- Audio-content validation beyond extension and MIME screening.
+- Transcription, analysis, or AI processing.
+- Queues, workers, retries, and background jobs.
+- Horizontal scaling across multiple application replicas.
+
+The next storage milestone should replace the local volume with object storage before introducing
+multiple replicas or production traffic.
 
