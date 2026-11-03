@@ -1,11 +1,12 @@
 # Moodi backend
 
-Moodi is a small FastAPI service that receives audio recordings from the Moodi mobile app and
-saves them to local storage. The upload response is returned only after the file has been written
-and finalized successfully.
+Moodi is a small FastAPI service that receives audio recordings from the Moodi mobile app, saves
+them to local storage, and transcribes saved M4A or WAV recordings with OpenAI `gpt-transcribe`.
+Upload and transcription requests are synchronous: their responses are returned only after the
+requested result has been saved locally.
 
-This first milestone intentionally has no authentication, database, Supabase integration,
-transcription, queue, worker, or AI processing.
+This milestone intentionally has no authentication, database, Supabase integration, queue,
+worker, diarization, session analysis, or other AI processing.
 
 ## What is implemented
 
@@ -23,6 +24,10 @@ transcription, queue, worker, or AI processing.
 - Ruff linting and formatting.
 - Docker and Docker Compose support with persistent local recording storage.
 - GitHub Actions checks for tests, linting, and formatting.
+- `POST /recordings/{recording_id}/transcription` for one-speaker transcription.
+- OpenAI `gpt-transcribe` integration with Serbian and English language hints.
+- Atomic local transcript JSON storage.
+- Provider-error handling that does not expose OpenAI error details.
 
 File extensions and MIME types are only basic screening. They do not prove that an uploaded file
 contains valid audio.
@@ -35,12 +40,15 @@ app/
   api/
     health.py              Health endpoint
     recordings.py          Recording upload endpoint
+    transcriptions.py      Saved-recording transcription endpoint
   core/
     config.py              Environment-backed settings
   schemas/
     recordings.py          Recording response model
+    transcriptions.py      Transcription response models
   services/
     recording_storage.py   Upload validation and filesystem storage
+    transcription.py       OpenAI request and transcript storage
 tests/                     Automated tests
 Dockerfile                 Production container image
 compose.yaml               Local container setup and recordings volume
@@ -59,12 +67,24 @@ cp .env.example .env
 | `APP_ENV` | `development` | Identifies the running environment. |
 | `RECORDINGS_DIR` | `./data/recordings` | Directory where finalized recordings are stored. |
 | `MAX_UPLOAD_MB` | `100` | Maximum accepted upload size in MiB. |
+| `OPENAI_API_KEY` | none | OpenAI API key used only by the backend. |
+| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-transcribe` | OpenAI transcription model. |
 | `PORT` | `8000` in Docker | HTTP port used by the container. Hosting platforms can override it. |
 
 Relative recording paths are resolved against the repository root. The application creates the
 recordings directory during startup.
 
 Never commit `.env`; it is intentionally ignored by Git and Docker.
+
+Create an API key in the OpenAI API platform and place it in your local `.env`:
+
+```dotenv
+OPENAI_API_KEY=your-api-key
+```
+
+Audio sent for transcription leaves the local server and is processed by OpenAI. Do not use real
+therapy recordings until the project's consent, privacy, retention, and production security
+requirements have been decided.
 
 ## Run locally with Python
 
@@ -167,6 +187,67 @@ The request flow stays intentionally simple:
 HTTP request -> API route -> recording storage service -> response schema
 ```
 
+### Transcribe a saved recording
+
+```http
+POST /recordings/{recording_id}/transcription
+```
+
+Upload a recording first and copy the returned `id`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/recordings \
+  -F "file=@/path/to/recording.m4a;type=audio/mp4"
+```
+
+Then request its transcription:
+
+```bash
+curl -X POST \
+  http://127.0.0.1:8000/recordings/8fb3c678-5b52-4a57-b51d-a8d0b77ae193/transcription
+```
+
+Successful response (`200`):
+
+```json
+{
+  "recording_id": "8fb3c678-5b52-4a57-b51d-a8d0b77ae193",
+  "text": "Ovo je tekst transkripcije.",
+  "languages": [
+    {"code": "sr"}
+  ],
+  "model": "gpt-transcribe",
+  "status": "completed",
+  "completed_at": "2026-11-03T12:00:00Z"
+}
+```
+
+The endpoint:
+
+1. Accepts only a UUID recording ID, never a client-provided filesystem path.
+2. Locates the previously saved recording inside `RECORDINGS_DIR`.
+3. Rejects files larger than OpenAI's 25 MB file-transcription limit before making an API call.
+4. Sends an M4A or WAV binary stream to `gpt-transcribe` with Serbian and English language hints.
+5. Returns only after saving `<uuid>.transcript.json` atomically beside the audio file.
+
+Raw AAC remains accepted by the upload endpoint, but this transcription milestone rejects `.aac`
+with HTTP `415` because it is not in OpenAI's documented file-transcription input list. No audio
+conversion or file splitting is performed yet.
+
+Important transcription error responses:
+
+| Status | Meaning |
+| --- | --- |
+| `404` | The recording UUID does not exist. |
+| `413` | The saved recording exceeds the 25 MB transcription limit. |
+| `415` | The saved recording format is not supported for transcription. |
+| `422` | The path parameter is not a valid UUID. |
+| `502` | OpenAI failed or the completed transcript could not be saved. |
+| `503` | `OPENAI_API_KEY` is not configured. |
+
+Transcription currently assumes one speaker and returns plain text without speaker labels or word
+timestamps. It does not summarize, diagnose, interpret, or analyze the recording.
+
 ## Run with Docker Compose
 
 Build and start the API:
@@ -206,6 +287,8 @@ docker run --rm \
   -e APP_ENV=development \
   -e RECORDINGS_DIR=/app/data/recordings \
   -e MAX_UPLOAD_MB=100 \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe \
   -v moodi_recordings:/app/data/recordings \
   moodi-backend
 ```
@@ -233,8 +316,9 @@ Free, and paid plans.
 2. Let Railway build the detected `Dockerfile`.
 3. Add a volume to the service and mount it at `/app/data/recordings`.
 4. Set `APP_ENV=testing`, `RECORDINGS_DIR=/app/data/recordings`, and `MAX_UPLOAD_MB=100`.
-5. Generate a public domain for the service.
-6. Use `/health` as the health-check path.
+5. Add `OPENAI_API_KEY` as a secret and set `OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe`.
+6. Generate a public domain for the service.
+7. Use `/health` as the health-check path.
 
 Railway currently offers a 30-day trial with a one-time $5 credit, followed by a Free plan with
 limited monthly credit and 0.5 GB of volume storage. See the official
@@ -289,6 +373,7 @@ Python.
 - Keep API routes small: validate HTTP input, call a service, map known errors, and return a
   response model.
 - Put filesystem and business behavior in `app/services/`.
+- Keep OpenAI-specific behavior inside `app/services/transcription.py`.
 - Keep environment-backed configuration in `app/core/config.py`.
 - Put Pydantic request and response models in `app/schemas/`.
 - Use type hints for function parameters and return values.
@@ -297,6 +382,8 @@ Python.
 - Use synchronous code unless a measured requirement needs background processing.
 - Do not add a database, queue, worker, authentication system, or cloud service prematurely.
 - Avoid new dependencies when the standard library or an existing dependency is clear enough.
+- Never commit, log, or return `OPENAI_API_KEY` or raw provider error details.
+- Mock the OpenAI client in tests; automated tests must not spend API credits.
 - Follow nearby code patterns instead of introducing a second way to solve the same problem.
 - Let Ruff handle formatting rather than formatting code manually.
 
@@ -332,6 +419,11 @@ The current test suite verifies:
 - Empty uploads are rejected and leave no file behind.
 - Oversized uploads return HTTP `413` and their partial files are removed.
 - A malicious client filename cannot escape the recordings directory.
+- A saved M4A recording can be transcribed and its transcript JSON is persisted.
+- Unknown and invalid recording IDs are rejected.
+- Oversized and raw AAC recordings are rejected before contacting OpenAI.
+- OpenAI failures preserve the original recording and do not leave a transcript.
+- Missing OpenAI configuration returns a service-unavailable response.
 
 Tests use a temporary recordings directory and do not write into the development storage folder.
 

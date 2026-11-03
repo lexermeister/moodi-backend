@@ -14,6 +14,10 @@ Keep route handlers small and put filesystem behavior in `app/services/`. Never 
 filename as a path. Upload endpoints must not report success before durable local writing and
 atomic finalization complete.
 
+OpenAI integration belongs in `app/services/transcription.py`. Keep provider errors out of API
+responses, never log or commit `OPENAI_API_KEY`, and mock the OpenAI client in automated tests.
+Transcription is synchronous for now and supports one-speaker M4A and WAV recordings up to 25 MB.
+
 ## Verification
 
 Run all checks before handing off changes:

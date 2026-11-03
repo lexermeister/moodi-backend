@@ -31,6 +31,10 @@ class RecordingTooLargeError(RecordingStorageError):
     """Raised when an upload exceeds the configured limit."""
 
 
+class RecordingNotFoundError(RecordingStorageError):
+    """Raised when a stored recording cannot be found."""
+
+
 @dataclass(frozen=True)
 class SavedRecording:
     recording_id: UUID
@@ -83,6 +87,18 @@ class RecordingStorage:
             filename=filename,
             size_bytes=size_bytes,
         )
+
+    def find(self, recording_id: UUID) -> Path:
+        matches = [
+            self.directory / f"{recording_id}{extension}"
+            for extension in ALLOWED_CONTENT_TYPES_BY_EXTENSION
+            if (self.directory / f"{recording_id}{extension}").is_file()
+        ]
+
+        if len(matches) != 1:
+            raise RecordingNotFoundError(f"Recording {recording_id} was not found")
+
+        return matches[0]
 
     @staticmethod
     def _remove_partial_file(path: Path) -> None:

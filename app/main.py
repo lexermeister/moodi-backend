@@ -3,12 +3,16 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import health, recordings
+from app.api import health, recordings, transcriptions
 from app.core.config import Settings, get_settings
 from app.services.recording_storage import RecordingStorage
+from app.services.transcription import TranscriptionClient, TranscriptionService
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    transcription_client: TranscriptionClient | None = None,
+) -> FastAPI:
     application_settings = settings or get_settings()
 
     @asynccontextmanager
@@ -19,11 +23,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         storage.prepare()
         application.state.recording_storage = storage
+        application.state.transcription_service = TranscriptionService(
+            directory=application_settings.recordings_path,
+            api_key=application_settings.openai_api_key,
+            model=application_settings.openai_transcription_model,
+            client=transcription_client,
+        )
         yield
 
     application = FastAPI(title="Moodi API", lifespan=lifespan)
     application.include_router(health.router)
     application.include_router(recordings.router)
+    application.include_router(transcriptions.router)
     return application
 
 
