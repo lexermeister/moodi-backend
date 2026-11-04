@@ -18,6 +18,11 @@ OpenAI integration belongs in `app/services/transcription.py`. Keep provider err
 responses, never log or commit `OPENAI_API_KEY`, and mock the OpenAI client in automated tests.
 Transcription is synchronous for now and supports one-speaker M4A and WAV recordings up to 25 MB.
 
+Application logs must use the `moodi` logger from `app/core/logging.py`. Log stable event names,
+server-generated recording IDs, durations, sizes, safe provider status codes, and provider request
+IDs. Never log API keys, authorization headers, transcript text, audio content, prompts, or client
+filenames.
+
 ## Verification
 
 Run all checks before handing off changes:

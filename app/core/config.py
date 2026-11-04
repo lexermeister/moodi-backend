@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     recordings_dir: Path = Path("./data/recordings")
     max_upload_mb: int = Field(default=100, gt=0)
     openai_api_key: str | None = None

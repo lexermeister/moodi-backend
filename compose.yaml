@@ -5,6 +5,7 @@ services:
       - "8000:8000"
     environment:
       APP_ENV: development
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       RECORDINGS_DIR: /app/data/recordings
       MAX_UPLOAD_MB: 100
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

@@ -28,6 +28,7 @@ worker, diarization, session analysis, or other AI processing.
 - OpenAI `gpt-transcribe` integration with Serbian and English language hints.
 - Atomic local transcript JSON storage.
 - Provider-error handling that does not expose OpenAI error details.
+- Structured application logs for lifecycle, uploads, and transcription outcomes.
 
 File extensions and MIME types are only basic screening. They do not prove that an uploaded file
 contains valid audio.
@@ -43,6 +44,7 @@ app/
     transcriptions.py      Saved-recording transcription endpoint
   core/
     config.py              Environment-backed settings
+    logging.py             Application logger setup
   schemas/
     recordings.py          Recording response model
     transcriptions.py      Transcription response models
@@ -65,6 +67,7 @@ cp .env.example .env
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_ENV` | `development` | Identifies the running environment. |
+| `LOG_LEVEL` | `INFO` | Minimum application log level. |
 | `RECORDINGS_DIR` | `./data/recordings` | Directory where finalized recordings are stored. |
 | `MAX_UPLOAD_MB` | `100` | Maximum accepted upload size in MiB. |
 | `OPENAI_API_KEY` | none | OpenAI API key used only by the backend. |
@@ -241,12 +244,38 @@ Important transcription error responses:
 | `404` | The recording UUID does not exist. |
 | `413` | The saved recording exceeds the 25 MB transcription limit. |
 | `415` | The saved recording format is not supported for transcription. |
-| `422` | The path parameter is not a valid UUID. |
+| `422` | The path parameter is not a valid UUID, or no speech was detected. |
 | `502` | OpenAI failed or the completed transcript could not be saved. |
 | `503` | `OPENAI_API_KEY` is not configured. |
 
 Transcription currently assumes one speaker and returns plain text without speaker labels or word
 timestamps. It does not summarize, diagnose, interpret, or analyze the recording.
+
+## Logging
+
+Application logs are written to the backend process's standard error stream, next to Uvicorn's
+access logs. When running locally, watch the terminal where `uvicorn` is running. With Docker
+Compose, use:
+
+```bash
+docker compose logs --follow api
+```
+
+Logs use stable event names such as `recording_saved`, `transcription_started`,
+`transcription_completed`, and `transcription_provider_failed`. A recording with no detected speech
+is logged as a `transcription_rejected` warning rather than an error. Logs include useful
+operational fields such as the server-generated recording ID, file size, duration, safe provider
+status code, and provider request ID.
+
+Set `LOG_LEVEL` in `.env` to `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. The default is
+`INFO`:
+
+```dotenv
+LOG_LEVEL=INFO
+```
+
+For privacy and security, logs never include API keys, authorization headers, transcript text,
+audio content, prompts, or client filenames.
 
 ## Run with Docker Compose
 

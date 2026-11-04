@@ -14,8 +14,13 @@ from app.services.transcription import OPENAI_MAX_FILE_BYTES
 
 
 class FakeTranscriptions:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        response_text: str = "Ovo je test transkripcije.",
+    ) -> None:
         self.error = error
+        self.response_text = response_text
         self.calls: list[dict[str, Any]] = []
 
     def create(self, **kwargs: Any) -> Any:
@@ -30,14 +35,18 @@ class FakeTranscriptions:
         if self.error is not None:
             raise self.error
         return SimpleNamespace(
-            text="Ovo je test transkripcije.",
+            text=self.response_text,
             languages=[SimpleNamespace(code="sr")],
         )
 
 
 class FakeOpenAIClient:
-    def __init__(self, error: Exception | None = None) -> None:
-        self.transcriptions = FakeTranscriptions(error)
+    def __init__(
+        self,
+        error: Exception | None = None,
+        response_text: str = "Ovo je test transkripcije.",
+    ) -> None:
+        self.transcriptions = FakeTranscriptions(error, response_text)
         self.audio = SimpleNamespace(transcriptions=self.transcriptions)
 
 
@@ -149,6 +158,7 @@ def test_transcription_rejects_raw_aac_before_openai(
 
 def test_openai_failure_preserves_recording_and_does_not_save_transcript(
     recordings_dir: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     fake_openai = FakeOpenAIClient(error=RuntimeError("provider unavailable"))
     settings = Settings(
@@ -165,6 +175,36 @@ def test_openai_failure_preserves_recording_and_does_not_save_transcript(
     assert response.json() == {"detail": "Could not transcribe recording"}
     assert (recordings_dir / recording["filename"]).exists()
     assert not (recordings_dir / f"{recording['id']}.transcript.json").exists()
+
+    logs = caplog.text
+    assert "transcription_provider_failed" in logs
+    assert recording["id"] in logs
+    assert "provider_error_type=RuntimeError" in logs
+    assert "provider unavailable" not in logs
+    assert "test-key" not in logs
+
+
+def test_no_speech_returns_validation_response_and_does_not_save_transcript(
+    recordings_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake_openai = FakeOpenAIClient(response_text="   ")
+    settings = Settings(
+        recordings_dir=recordings_dir,
+        max_upload_mb=30,
+        openai_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings, transcription_client=fake_openai)) as client:
+        recording = upload_recording(client)
+        response = client.post(f"/recordings/{recording['id']}/transcription")
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "No speech was detected in the recording"}
+    assert (recordings_dir / recording["filename"]).exists()
+    assert not (recordings_dir / f"{recording['id']}.transcript.json").exists()
+    assert "reason=no_speech" in caplog.text
+    assert "transcription_provider_failed" not in caplog.text
 
 
 def test_transcription_requires_api_key(recordings_dir: Path) -> None:

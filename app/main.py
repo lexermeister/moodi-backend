@@ -5,8 +5,11 @@ from fastapi import FastAPI
 
 from app.api import health, recordings, transcriptions
 from app.core.config import Settings, get_settings
+from app.core.logging import configure_logging, get_logger
 from app.services.recording_storage import RecordingStorage
 from app.services.transcription import TranscriptionClient, TranscriptionService
+
+logger = get_logger("lifecycle")
 
 
 def create_app(
@@ -14,6 +17,7 @@ def create_app(
     transcription_client: TranscriptionClient | None = None,
 ) -> FastAPI:
     application_settings = settings or get_settings()
+    configure_logging(application_settings.log_level)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -29,7 +33,19 @@ def create_app(
             model=application_settings.openai_transcription_model,
             client=transcription_client,
         )
-        yield
+        logger.info(
+            "application_started app_env=%s recordings_dir=%s max_upload_mb=%s "
+            "transcription_model=%s openai_configured=%s",
+            application_settings.app_env,
+            application_settings.recordings_path,
+            application_settings.max_upload_mb,
+            application_settings.openai_transcription_model,
+            bool(application_settings.openai_api_key),
+        )
+        try:
+            yield
+        finally:
+            logger.info("application_stopped")
 
     application = FastAPI(title="Moodi API", lifespan=lifespan)
     application.include_router(health.router)

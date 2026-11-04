@@ -33,8 +33,25 @@ class RecordingTooLargeForTranscriptionError(TranscriptionError):
     """Raised when a recording exceeds OpenAI's file-size limit."""
 
 
+class NoSpeechDetectedError(TranscriptionError):
+    """Raised when the provider returns no transcribable speech."""
+
+
 class TranscriptionProviderError(TranscriptionError):
     """Raised when the transcription provider request fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider_error_type: str | None = None,
+        status_code: int | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider_error_type = provider_error_type
+        self.status_code = status_code
+        self.request_id = request_id
 
 
 class TranscriptStorageError(TranscriptionError):
@@ -80,11 +97,16 @@ class TranscriptionService:
                     extra_body={"languages": ["sr", "en"]},
                 )
         except Exception as error:
-            raise TranscriptionProviderError("OpenAI transcription failed") from error
+            raise TranscriptionProviderError(
+                "OpenAI transcription failed",
+                provider_error_type=type(error).__name__,
+                status_code=getattr(error, "status_code", None),
+                request_id=getattr(error, "request_id", None),
+            ) from error
 
         text = getattr(response, "text", None)
         if not isinstance(text, str) or not text.strip():
-            raise TranscriptionProviderError("OpenAI returned an empty transcription")
+            raise NoSpeechDetectedError("No speech was detected in the recording")
 
         completed = CompletedTranscription(
             recording_id=recording_id,
