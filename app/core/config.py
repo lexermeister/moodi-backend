@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    database_url: str = "postgresql+psycopg://moodi:moodi@localhost:5432/moodi"
     recordings_dir: Path = Path("./data/recordings")
     max_upload_mb: int = Field(default=100, gt=0)
     openai_api_key: str | None = None

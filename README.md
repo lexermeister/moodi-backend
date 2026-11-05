@@ -3,9 +3,9 @@
 Moodi is a small FastAPI service that receives audio recordings from the Moodi mobile app, saves
 them to local storage, and transcribes saved M4A or WAV recordings with OpenAI `gpt-transcribe`.
 Upload and transcription requests are synchronous: their responses are returned only after the
-requested result has been saved locally.
+audio and database state have been durably saved.
 
-This milestone intentionally has no authentication, database, Supabase integration, queue,
+This milestone intentionally has no authentication, Supabase integration, object storage, queue,
 worker, diarization, session analysis, or other AI processing.
 
 ## What is implemented
@@ -26,7 +26,9 @@ worker, diarization, session analysis, or other AI processing.
 - GitHub Actions checks for tests, linting, and formatting.
 - `POST /recordings/{recording_id}/transcription` for one-speaker transcription.
 - OpenAI `gpt-transcribe` integration with Serbian and English language hints.
-- Atomic local transcript JSON storage.
+- PostgreSQL recording metadata and transcription-attempt storage.
+- Alembic-managed database migrations.
+- Internal transcription correlation IDs and captured OpenAI request IDs.
 - Provider-error handling that does not expose OpenAI error details.
 - Structured application logs for lifecycle, uploads, and transcription outcomes.
 
@@ -44,13 +46,17 @@ app/
     transcriptions.py      Saved-recording transcription endpoint
   core/
     config.py              Environment-backed settings
+    database.py            SQLAlchemy engine and request sessions
     logging.py             Application logger setup
+  models/                  SQLAlchemy database models
   schemas/
     recordings.py          Recording response model
     transcriptions.py      Transcription response models
   services/
     recording_storage.py   Upload validation and filesystem storage
-    transcription.py       OpenAI request and transcript storage
+    recording_service.py   Recording metadata and file coordination
+    transcription.py       OpenAI requests and transcription persistence
+migrations/                Alembic database migrations
 tests/                     Automated tests
 Dockerfile                 Production container image
 compose.yaml               Local container setup and recordings volume
@@ -68,6 +74,7 @@ cp .env.example .env
 | --- | --- | --- |
 | `APP_ENV` | `development` | Identifies the running environment. |
 | `LOG_LEVEL` | `INFO` | Minimum application log level. |
+| `DATABASE_URL` | local PostgreSQL | SQLAlchemy PostgreSQL connection URL. |
 | `RECORDINGS_DIR` | `./data/recordings` | Directory where finalized recordings are stored. |
 | `MAX_UPLOAD_MB` | `100` | Maximum accepted upload size in MiB. |
 | `OPENAI_API_KEY` | none | OpenAI API key used only by the backend. |
@@ -100,6 +107,13 @@ Install the locked dependencies:
 
 ```bash
 uv sync --locked
+```
+
+Start PostgreSQL and apply the migrations:
+
+```bash
+docker compose up --detach database
+uv run alembic upgrade head
 ```
 
 Start the development server:
@@ -182,12 +196,15 @@ The upload request is handled synchronously from the mobile client's perspective
 7. Empty and oversized uploads are rejected and their temporary files are removed.
 8. A successful write is flushed and synchronized to disk.
 9. The temporary file is atomically renamed to its final UUID filename.
-10. Only then does the endpoint return HTTP `201` with `status: saved`.
+10. Recording metadata is committed to PostgreSQL.
+11. Only then does the endpoint return HTTP `201` with `status: saved`.
+
+If metadata persistence fails, the finalized audio file is removed on a best-effort basis.
 
 The request flow stays intentionally simple:
 
 ```text
-HTTP request -> API route -> recording storage service -> response schema
+HTTP request -> API route -> recording service -> filesystem + PostgreSQL -> response schema
 ```
 
 ### Transcribe a saved recording
@@ -214,6 +231,7 @@ Successful response (`200`):
 
 ```json
 {
+  "transcription_id": "f1163ed4-6383-4597-ac77-19039bd760de",
   "recording_id": "8fb3c678-5b52-4a57-b51d-a8d0b77ae193",
   "text": "Ovo je tekst transkripcije.",
   "languages": [
@@ -228,10 +246,17 @@ Successful response (`200`):
 The endpoint:
 
 1. Accepts only a UUID recording ID, never a client-provided filesystem path.
-2. Locates the previously saved recording inside `RECORDINGS_DIR`.
+2. Loads its server-generated storage key from PostgreSQL and locates the audio inside
+   `RECORDINGS_DIR`.
 3. Rejects files larger than OpenAI's 25 MB file-transcription limit before making an API call.
 4. Sends an M4A or WAV binary stream to `gpt-transcribe` with Serbian and English language hints.
-5. Returns only after saving `<uuid>.transcript.json` atomically beside the audio file.
+5. Creates a `started` transcription row before contacting OpenAI.
+6. Sends the transcription UUID as `X-Client-Request-Id` and captures OpenAI's `x-request-id`
+   when available.
+7. Returns only after updating the attempt to `completed` with the transcript in PostgreSQL.
+
+Every retry creates a separate transcription attempt. Failed attempts keep a safe error category
+but never store raw provider error messages.
 
 Raw AAC remains accepted by the upload endpoint, but this transcription milestone rejects `.aac`
 with HTTP `415` because it is not in OpenAI's documented file-transcription input list. No audio
@@ -264,8 +289,8 @@ docker compose logs --follow api
 Logs use stable event names such as `recording_saved`, `transcription_started`,
 `transcription_completed`, and `transcription_provider_failed`. A recording with no detected speech
 is logged as a `transcription_rejected` warning rather than an error. Logs include useful
-operational fields such as the server-generated recording ID, file size, duration, safe provider
-status code, and provider request ID.
+operational fields such as the server-generated recording ID, transcription ID, file size,
+duration, safe provider status code, and provider request ID.
 
 Set `LOG_LEVEL` in `.env` to `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. The default is
 `INFO`:
@@ -291,8 +316,9 @@ Check it from another terminal:
 curl http://127.0.0.1:8000/health
 ```
 
-Compose stores recordings in the named volume `moodi-backend_moodi_recordings`, mounted at
-`/app/data/recordings`. The recordings survive container replacement and normal shutdowns.
+Compose stores recordings in the named `moodi_recordings` volume and PostgreSQL data in
+`moodi_postgres`. Both survive container replacement and normal shutdowns. Compose waits for the
+database and applies pending Alembic migrations before starting the API.
 
 Stop the service while preserving its recordings:
 
@@ -300,7 +326,7 @@ Stop the service while preserving its recordings:
 docker compose down
 ```
 
-To deliberately remove the containers **and all recordings in the named volume**:
+To deliberately remove the containers, recordings, and database contents:
 
 ```bash
 docker compose down --volumes
@@ -314,6 +340,7 @@ docker run --rm \
   --name moodi-backend \
   -p 8000:8000 \
   -e APP_ENV=development \
+  -e DATABASE_URL="$DATABASE_URL" \
   -e RECORDINGS_DIR=/app/data/recordings \
   -e MAX_UPLOAD_MB=100 \
   -e OPENAI_API_KEY="$OPENAI_API_KEY" \
@@ -321,6 +348,8 @@ docker run --rm \
   -v moodi_recordings:/app/data/recordings \
   moodi-backend
 ```
+
+Apply `alembic upgrade head` against the same `DATABASE_URL` before starting the image directly.
 
 The image:
 
@@ -332,9 +361,10 @@ The image:
 
 ## Deployment options for testing
 
-The current milestone stores files on a local filesystem. A hosted deployment therefore needs a
-persistent volume mounted at `/app/data/recordings`. Without a volume, recordings disappear when
-the container restarts or is redeployed.
+The current milestone stores audio on a local filesystem and metadata in PostgreSQL. A hosted
+deployment therefore needs both a persistent volume mounted at `/app/data/recordings` and a
+PostgreSQL database supplied through `DATABASE_URL`. Apply `alembic upgrade head` during deployment.
+Without a persistent volume, recordings disappear when the container restarts or is redeployed.
 
 ### Railway — recommended for the first shared test environment
 
@@ -344,10 +374,11 @@ Free, and paid plans.
 1. Create a Railway project from the GitHub repository.
 2. Let Railway build the detected `Dockerfile`.
 3. Add a volume to the service and mount it at `/app/data/recordings`.
-4. Set `APP_ENV=testing`, `RECORDINGS_DIR=/app/data/recordings`, and `MAX_UPLOAD_MB=100`.
-5. Add `OPENAI_API_KEY` as a secret and set `OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe`.
-6. Generate a public domain for the service.
-7. Use `/health` as the health-check path.
+4. Add a PostgreSQL service and set its connection URL as `DATABASE_URL`.
+5. Set `APP_ENV=testing`, `RECORDINGS_DIR=/app/data/recordings`, and `MAX_UPLOAD_MB=100`.
+6. Add `OPENAI_API_KEY` as a secret and set `OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe`.
+7. Run `alembic upgrade head` as a deployment step.
+8. Generate a public domain for the service and use `/health` as the health-check path.
 
 Railway currently offers a 30-day trial with a one-time $5 credit, followed by a Free plan with
 limited monthly credit and 0.5 GB of volume storage. See the official
@@ -409,7 +440,7 @@ Python.
 - Use `pathlib.Path` for filesystem paths.
 - Prefer a function over a class when no state or clear object boundary is needed.
 - Use synchronous code unless a measured requirement needs background processing.
-- Do not add a database, queue, worker, authentication system, or cloud service prematurely.
+- Do not add a queue, worker, authentication system, or cloud service prematurely.
 - Avoid new dependencies when the standard library or an existing dependency is clear enough.
 - Never commit, log, or return `OPENAI_API_KEY` or raw provider error details.
 - Mock the OpenAI client in tests; automated tests must not spend API credits.
@@ -443,15 +474,16 @@ Commit both `pyproject.toml` and `uv.lock` whenever dependencies change.
 The current test suite verifies:
 
 - The health endpoint returns HTTP `200` and `{"status": "ok"}`.
-- A successful upload returns HTTP `201` and saves the exact uploaded bytes.
+- A successful upload returns HTTP `201`, saves the exact bytes, and persists its metadata.
 - The multipart `file` field is required.
 - Empty uploads are rejected and leave no file behind.
 - Oversized uploads return HTTP `413` and their partial files are removed.
 - A malicious client filename cannot escape the recordings directory.
-- A saved M4A recording can be transcribed and its transcript JSON is persisted.
+- A saved M4A recording creates a completed database transcription attempt.
+- Internal and OpenAI request IDs are persisted for provider-call correlation.
 - Unknown and invalid recording IDs are rejected.
 - Oversized and raw AAC recordings are rejected before contacting OpenAI.
-- OpenAI failures preserve the original recording and do not leave a transcript.
+- OpenAI failures preserve the original recording and persist a safe failed attempt.
 - Missing OpenAI configuration returns a service-unavailable response.
 
 Tests use a temporary recordings directory and do not write into the development storage folder.
@@ -488,15 +520,15 @@ Before committing, confirm that:
 
 ## Current milestone boundaries
 
-This repository currently provides durable local recording ingestion only. These features are
-deliberately deferred:
+This repository currently provides durable local recording ingestion, PostgreSQL metadata, and
+synchronous transcription. These features are deliberately deferred:
 
 - User authentication and authorization.
-- Database metadata and recording ownership.
+- User ownership and row-level authorization.
 - Supabase or other object storage.
 - Audio-content validation beyond extension and MIME screening.
-- Transcription, analysis, or AI processing.
-- Queues, workers, retries, and background jobs.
+- Analysis or other AI processing.
+- Queues, workers, automatic retries, and background jobs.
 - Horizontal scaling across multiple application replicas.
 
 The next storage milestone should replace the local volume with object storage before introducing

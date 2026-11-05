@@ -1,18 +1,22 @@
 from time import monotonic
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.orm import Session
 
+from app.core.database import get_database_session
 from app.core.logging import get_logger
 from app.schemas.transcriptions import TranscriptionLanguage, TranscriptionResponse
-from app.services.recording_storage import RecordingNotFoundError, RecordingStorage
+from app.services.recording_service import RecordingNotFoundError, RecordingService
+from app.services.recording_storage import RecordingStorage
 from app.services.transcription import (
     NoSpeechDetectedError,
     RecordingTooLargeForTranscriptionError,
     TranscriptionNotConfiguredError,
+    TranscriptionPersistenceError,
     TranscriptionProviderError,
     TranscriptionService,
-    TranscriptStorageError,
     UnsupportedTranscriptionFormatError,
 )
 
@@ -29,13 +33,22 @@ def get_transcription_service(request: Request) -> TranscriptionService:
 
 
 @router.post("/{recording_id}/transcription", response_model=TranscriptionResponse)
-def create_transcription(recording_id: UUID, request: Request) -> TranscriptionResponse:
+def create_transcription(
+    recording_id: UUID,
+    request: Request,
+    session: Annotated[Session, Depends(get_database_session)],
+) -> TranscriptionResponse:
     started_at = monotonic()
     logger.info("transcription_started recording_id=%s", recording_id)
 
     try:
-        recording_path = get_recording_storage(request).find(recording_id)
-        completed = get_transcription_service(request).transcribe(recording_id, recording_path)
+        recording_service = RecordingService(get_recording_storage(request), session)
+        _, recording_path = recording_service.find(recording_id)
+        completed = get_transcription_service(request).transcribe(
+            recording_id,
+            recording_path,
+            session,
+        )
     except RecordingNotFoundError as error:
         logger.warning("transcription_rejected recording_id=%s reason=not_found", recording_id)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -64,8 +77,11 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except NoSpeechDetectedError as error:
         logger.warning(
-            "transcription_rejected recording_id=%s reason=no_speech duration_ms=%s",
+            "transcription_rejected recording_id=%s transcription_id=%s "
+            "provider_request_id=%s reason=no_speech duration_ms=%s",
             recording_id,
+            error.transcription_id,
+            error.provider_request_id,
             round((monotonic() - started_at) * 1000),
         )
         raise HTTPException(
@@ -74,9 +90,10 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except TranscriptionProviderError as error:
         logger.error(
-            "transcription_provider_failed recording_id=%s provider_error_type=%s "
-            "status_code=%s request_id=%s duration_ms=%s",
+            "transcription_provider_failed recording_id=%s transcription_id=%s "
+            "provider_error_type=%s status_code=%s provider_request_id=%s duration_ms=%s",
             recording_id,
+            error.transcription_id,
             error.provider_error_type,
             error.status_code,
             error.request_id,
@@ -86,10 +103,12 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not transcribe recording",
         ) from error
-    except TranscriptStorageError as error:
+    except TranscriptionPersistenceError as error:
         logger.error(
-            "transcript_save_failed recording_id=%s error_type=%s cause_type=%s",
+            "transcription_save_failed recording_id=%s transcription_id=%s "
+            "error_type=%s cause_type=%s",
             recording_id,
+            error.transcription_id,
             type(error).__name__,
             type(error.__cause__).__name__ if error.__cause__ else None,
         )
@@ -99,14 +118,18 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
 
     logger.info(
-        "transcription_completed recording_id=%s model=%s language_count=%s duration_ms=%s",
+        "transcription_completed recording_id=%s transcription_id=%s "
+        "provider_request_id=%s model=%s language_count=%s duration_ms=%s",
         recording_id,
+        completed.transcription_id,
+        completed.provider_request_id,
         completed.model,
         len(completed.languages),
         round((monotonic() - started_at) * 1000),
     )
 
     return TranscriptionResponse(
+        transcription_id=completed.transcription_id,
         recording_id=completed.recording_id,
         text=completed.text,
         languages=[TranscriptionLanguage(code=code) for code in completed.languages],

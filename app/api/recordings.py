@@ -1,9 +1,12 @@
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from sqlalchemy.orm import Session
 
+from app.core.database import get_database_session
 from app.core.logging import get_logger
 from app.schemas.recordings import RecordingResponse
+from app.services.recording_service import RecordingPersistenceError, RecordingService
 from app.services.recording_storage import (
     EmptyRecordingError,
     InvalidRecordingTypeError,
@@ -24,11 +27,12 @@ def get_recording_storage(request: Request) -> RecordingStorage:
 def create_recording(
     request: Request,
     file: Annotated[UploadFile, File(description="M4A, AAC, or WAV audio file")],
+    session: Annotated[Session, Depends(get_database_session)],
 ) -> RecordingResponse:
-    storage = get_recording_storage(request)
+    service = RecordingService(get_recording_storage(request), session)
 
     try:
-        saved = storage.save(file)
+        saved = service.save(file)
     except EmptyRecordingError as error:
         logger.warning("recording_upload_rejected reason=empty")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
@@ -44,7 +48,7 @@ def create_recording(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=str(error),
         ) from error
-    except RecordingStorageError as error:
+    except (RecordingPersistenceError, RecordingStorageError) as error:
         logger.error(
             "recording_save_failed error_type=%s cause_type=%s",
             type(error).__name__,

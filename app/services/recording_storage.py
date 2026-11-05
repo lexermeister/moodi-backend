@@ -31,10 +31,6 @@ class RecordingTooLargeError(RecordingStorageError):
     """Raised when an upload exceeds the configured limit."""
 
 
-class RecordingNotFoundError(RecordingStorageError):
-    """Raised when a stored recording cannot be found."""
-
-
 @dataclass(frozen=True)
 class SavedRecording:
     recording_id: UUID
@@ -75,11 +71,13 @@ class RecordingStorage:
                 os.fsync(output.fileno())
 
             temporary.replace(destination)
+            self._fsync_directory()
         except (EmptyRecordingError, RecordingTooLargeError):
             self._remove_partial_file(temporary)
             raise
         except Exception as error:
             self._remove_partial_file(temporary)
+            self._remove_partial_file(destination)
             raise RecordingStorageError("Failed to save recording") from error
 
         return SavedRecording(
@@ -88,17 +86,27 @@ class RecordingStorage:
             size_bytes=size_bytes,
         )
 
-    def find(self, recording_id: UUID) -> Path:
-        matches = [
-            self.directory / f"{recording_id}{extension}"
-            for extension in ALLOWED_CONTENT_TYPES_BY_EXTENSION
-            if (self.directory / f"{recording_id}{extension}").is_file()
-        ]
+    def resolve(self, storage_key: str) -> Path:
+        path = (self.directory / storage_key).resolve()
+        if path.parent != self.directory.resolve() or path.name != storage_key:
+            raise RecordingStorageError("Invalid recording storage key")
+        if not path.is_file():
+            raise RecordingStorageError("Stored recording file was not found")
+        return path
 
-        if len(matches) != 1:
-            raise RecordingNotFoundError(f"Recording {recording_id} was not found")
+    def delete(self, storage_key: str) -> None:
+        path = (self.directory / storage_key).resolve()
+        if path.parent != self.directory.resolve() or path.name != storage_key:
+            raise RecordingStorageError("Invalid recording storage key")
+        path.unlink(missing_ok=True)
+        self._fsync_directory()
 
-        return matches[0]
+    def _fsync_directory(self) -> None:
+        directory_fd = os.open(self.directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     @staticmethod
     def _remove_partial_file(path: Path) -> None:

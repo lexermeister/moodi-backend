@@ -10,6 +10,7 @@ class TranscriptionLanguage(BaseModel):
 
 
 class TranscriptionResponse(BaseModel):
+    transcription_id: UUID
     recording_id: UUID
     text: str
     languages: list[TranscriptionLanguage]

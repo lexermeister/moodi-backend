@@ -1,11 +1,30 @@
 services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: moodi
+      POSTGRES_USER: moodi
+      POSTGRES_PASSWORD: moodi
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moodi -d moodi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - moodi_postgres:/var/lib/postgresql/data
+
   api:
     build: .
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     ports:
       - "8000:8000"
+    depends_on:
+      database:
+        condition: service_healthy
     environment:
       APP_ENV: development
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg://moodi:moodi@database:5432/moodi
       RECORDINGS_DIR: /app/data/recordings
       MAX_UPLOAD_MB: 100
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -14,5 +33,6 @@ services:
       - moodi_recordings:/app/data/recordings
 
 volumes:
+  moodi_postgres:
   moodi_recordings:
 
