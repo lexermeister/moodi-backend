@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     recordings_dir: Path = Path("./data/recordings")
     max_upload_mb: int = Field(default=100, gt=0)
     openai_api_key: str | None = None
-    openai_transcription_model: str = "gpt-transcribe"
+    openai_transcription_model: str = "gpt-4o-transcribe-diarize"
 
     @property
     def recordings_path(self) -> Path:

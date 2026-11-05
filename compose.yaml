@@ -9,7 +9,7 @@ services:
       RECORDINGS_DIR: /app/data/recordings
       MAX_UPLOAD_MB: 100
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-gpt-transcribe}
+      OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-gpt-4o-transcribe-diarize}
     volumes:
       - moodi_recordings:/app/data/recordings
 

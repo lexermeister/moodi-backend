@@ -4,17 +4,14 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from openai import OpenAI
 
 OPENAI_MAX_FILE_BYTES = 25 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {".m4a", ".wav"}
-TRANSCRIPTION_PROMPT = (
-    "A single-speaker personal reflection or therapy journal. "
-    "Preserve the original language and transcribe only what is spoken."
-)
+EXPECTED_SPEAKER_COUNT = 2
 
 
 class TranscriptionError(Exception):
@@ -35,6 +32,14 @@ class RecordingTooLargeForTranscriptionError(TranscriptionError):
 
 class NoSpeechDetectedError(TranscriptionError):
     """Raised when the provider returns no transcribable speech."""
+
+
+class DiarizationValidationError(TranscriptionError):
+    """Raised when a transcript cannot be attributed to exactly two speakers."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class TranscriptionProviderError(TranscriptionError):
@@ -63,9 +68,16 @@ class TranscriptionClient(Protocol):
 
 
 @dataclass(frozen=True)
+class TranscriptTurn:
+    speaker: Literal["speaker_1", "speaker_2"]
+    text: str
+
+
+@dataclass(frozen=True)
 class CompletedTranscription:
     recording_id: UUID
     text: str
+    turns: list[TranscriptTurn]
     languages: list[str]
     model: str
     completed_at: datetime
@@ -93,8 +105,8 @@ class TranscriptionService:
                 response = client.audio.transcriptions.create(
                     model=self.model,
                     file=audio_file,
-                    prompt=TRANSCRIPTION_PROMPT,
-                    extra_body={"languages": ["sr", "en"]},
+                    response_format="diarized_json",
+                    chunking_strategy="auto",
                 )
         except Exception as error:
             raise TranscriptionProviderError(
@@ -104,13 +116,13 @@ class TranscriptionService:
                 request_id=getattr(error, "request_id", None),
             ) from error
 
-        text = getattr(response, "text", None)
-        if not isinstance(text, str) or not text.strip():
-            raise NoSpeechDetectedError("No speech was detected in the recording")
+        turns = self._normalize_turns(response)
+        text = " ".join(turn.text for turn in turns)
 
         completed = CompletedTranscription(
             recording_id=recording_id,
             text=text,
+            turns=turns,
             languages=self._language_codes(getattr(response, "languages", [])),
             model=self.model,
             completed_at=datetime.now(UTC),
@@ -151,12 +163,80 @@ class TranscriptionService:
                 codes.append(code)
         return codes
 
+    @classmethod
+    def _normalize_turns(cls, response: Any) -> list[TranscriptTurn]:
+        segments = getattr(response, "segments", None)
+        if not segments:
+            text = getattr(response, "text", None)
+            if not isinstance(text, str) or not text.strip():
+                raise NoSpeechDetectedError("No speech was detected in the recording")
+            raise DiarizationValidationError(
+                "Transcription did not include speaker labels",
+                reason="missing_speaker_segments",
+            )
+
+        speaker_labels: dict[str, Literal["speaker_1", "speaker_2"]] = {}
+        turns: list[TranscriptTurn] = []
+
+        for segment in segments:
+            speaker = cls._segment_value(segment, "speaker")
+            if not isinstance(speaker, str) or not speaker.strip():
+                raise DiarizationValidationError(
+                    "A transcript segment did not include a speaker label",
+                    reason="missing_speaker_label",
+                )
+            speaker = speaker.strip()
+
+            segment_text = cls._segment_value(segment, "text")
+            if not isinstance(segment_text, str) or not segment_text.strip():
+                raise DiarizationValidationError(
+                    "A transcript segment did not include speech",
+                    reason="empty_segment",
+                )
+
+            if speaker not in speaker_labels:
+                if len(speaker_labels) == EXPECTED_SPEAKER_COUNT:
+                    raise DiarizationValidationError(
+                        "Transcription must contain exactly two speakers",
+                        reason="unexpected_speaker_count",
+                    )
+                normalized_speaker: Literal["speaker_1", "speaker_2"] = (
+                    "speaker_1" if not speaker_labels else "speaker_2"
+                )
+                speaker_labels[speaker] = normalized_speaker
+
+            normalized_speaker = speaker_labels[speaker]
+            normalized_text = segment_text.strip()
+            if turns and turns[-1].speaker == normalized_speaker:
+                previous = turns[-1]
+                turns[-1] = TranscriptTurn(
+                    speaker=previous.speaker,
+                    text=f"{previous.text} {normalized_text}",
+                )
+            else:
+                turns.append(TranscriptTurn(speaker=normalized_speaker, text=normalized_text))
+
+        if len(speaker_labels) != EXPECTED_SPEAKER_COUNT:
+            raise DiarizationValidationError(
+                "Transcription must contain exactly two speakers",
+                reason="unexpected_speaker_count",
+            )
+
+        return turns
+
+    @staticmethod
+    def _segment_value(segment: Any, field: str) -> Any:
+        if isinstance(segment, dict):
+            return segment.get(field)
+        return getattr(segment, field, None)
+
     def _save(self, transcription: CompletedTranscription) -> None:
         destination = self.directory / f"{transcription.recording_id}.transcript.json"
         temporary = self.directory / f".{transcription.recording_id}.transcript.tmp"
         payload = {
             "recording_id": str(transcription.recording_id),
             "text": transcription.text,
+            "turns": [{"speaker": turn.speaker, "text": turn.text} for turn in transcription.turns],
             "languages": [{"code": code} for code in transcription.languages],
             "model": transcription.model,
             "status": "completed",

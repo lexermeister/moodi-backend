@@ -17,10 +17,14 @@ class FakeTranscriptions:
     def __init__(
         self,
         error: Exception | None = None,
-        response_text: str = "Ovo je test transkripcije.",
+        response_text: str = (
+            "How have you been feeling this week? I've been feeling anxious. When did it start?"
+        ),
+        segments: list[Any] | None = None,
     ) -> None:
         self.error = error
         self.response_text = response_text
+        self.segments = segments if segments is not None else default_segments()
         self.calls: list[dict[str, Any]] = []
 
     def create(self, **kwargs: Any) -> Any:
@@ -36,7 +40,7 @@ class FakeTranscriptions:
             raise self.error
         return SimpleNamespace(
             text=self.response_text,
-            languages=[SimpleNamespace(code="sr")],
+            segments=self.segments,
         )
 
 
@@ -44,10 +48,22 @@ class FakeOpenAIClient:
     def __init__(
         self,
         error: Exception | None = None,
-        response_text: str = "Ovo je test transkripcije.",
+        response_text: str = (
+            "How have you been feeling this week? I've been feeling anxious. When did it start?"
+        ),
+        segments: list[Any] | None = None,
     ) -> None:
-        self.transcriptions = FakeTranscriptions(error, response_text)
+        self.transcriptions = FakeTranscriptions(error, response_text, segments)
         self.audio = SimpleNamespace(transcriptions=self.transcriptions)
+
+
+def default_segments() -> list[Any]:
+    return [
+        SimpleNamespace(speaker="provider-a", text="How have you been feeling?"),
+        SimpleNamespace(speaker="provider-a", text="This week?"),
+        SimpleNamespace(speaker="provider-b", text="I've been feeling anxious."),
+        SimpleNamespace(speaker="provider-a", text="When did it start?"),
+    ]
 
 
 @pytest.fixture
@@ -64,6 +80,7 @@ def transcription_client(
         recordings_dir=recordings_dir,
         max_upload_mb=30,
         openai_api_key="test-key",
+        openai_transcription_model="gpt-4o-transcribe-diarize",
     )
     with TestClient(create_app(settings, transcription_client=fake_openai)) as test_client:
         yield test_client
@@ -91,9 +108,16 @@ def test_transcription_returns_and_saves_completed_transcript(
     assert response.status_code == 200
     payload = response.json()
     assert payload["recording_id"] == recording["id"]
-    assert payload["text"] == "Ovo je test transkripcije."
-    assert payload["languages"] == [{"code": "sr"}]
-    assert payload["model"] == "gpt-transcribe"
+    assert payload["text"] == (
+        "How have you been feeling? This week? I've been feeling anxious. When did it start?"
+    )
+    assert payload["turns"] == [
+        {"speaker": "speaker_1", "text": "How have you been feeling? This week?"},
+        {"speaker": "speaker_2", "text": "I've been feeling anxious."},
+        {"speaker": "speaker_1", "text": "When did it start?"},
+    ]
+    assert payload["languages"] == []
+    assert payload["model"] == "gpt-4o-transcribe-diarize"
     assert payload["status"] == "completed"
 
     transcript_path = recordings_dir / f"{recording['id']}.transcript.json"
@@ -102,10 +126,12 @@ def test_transcription_returns_and_saves_completed_transcript(
 
     assert len(fake_openai.transcriptions.calls) == 1
     call = fake_openai.transcriptions.calls[0]
-    assert call["model"] == "gpt-transcribe"
+    assert call["model"] == "gpt-4o-transcribe-diarize"
     assert call["filename"] == recording["filename"]
     assert call["audio_bytes"] == b"audio test bytes"
-    assert call["extra_body"] == {"languages": ["sr", "en"]}
+    assert call["response_format"] == "diarized_json"
+    assert call["chunking_strategy"] == "auto"
+    assert "prompt" not in call
 
 
 def test_transcription_rejects_unknown_recording(
@@ -188,7 +214,7 @@ def test_no_speech_returns_validation_response_and_does_not_save_transcript(
     recordings_dir: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    fake_openai = FakeOpenAIClient(response_text="   ")
+    fake_openai = FakeOpenAIClient(response_text="   ", segments=[])
     settings = Settings(
         recordings_dir=recordings_dir,
         max_upload_mb=30,
@@ -205,6 +231,86 @@ def test_no_speech_returns_validation_response_and_does_not_save_transcript(
     assert not (recordings_dir / f"{recording['id']}.transcript.json").exists()
     assert "reason=no_speech" in caplog.text
     assert "transcription_provider_failed" not in caplog.text
+
+
+def test_transcription_rejects_response_without_speaker_segments(
+    recordings_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake_openai = FakeOpenAIClient(response_text="There is speech.", segments=[])
+    settings = Settings(
+        recordings_dir=recordings_dir,
+        max_upload_mb=30,
+        openai_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings, transcription_client=fake_openai)) as client:
+        recording = upload_recording(client)
+        response = client.post(f"/recordings/{recording['id']}/transcription")
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Transcription did not include speaker labels"}
+    assert not (recordings_dir / f"{recording['id']}.transcript.json").exists()
+    assert "reason=missing_speaker_segments" in caplog.text
+
+
+def test_transcription_rejects_segment_without_speaker_label(
+    recordings_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    segments = [
+        SimpleNamespace(speaker="provider-a", text="Hello."),
+        SimpleNamespace(speaker=None, text="Hi."),
+    ]
+    fake_openai = FakeOpenAIClient(segments=segments)
+    settings = Settings(
+        recordings_dir=recordings_dir,
+        max_upload_mb=30,
+        openai_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings, transcription_client=fake_openai)) as client:
+        recording = upload_recording(client)
+        response = client.post(f"/recordings/{recording['id']}/transcription")
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "A transcript segment did not include a speaker label"}
+    assert not (recordings_dir / f"{recording['id']}.transcript.json").exists()
+    assert "reason=missing_speaker_label" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "segments",
+    [
+        [SimpleNamespace(speaker="provider-a", text="Only one speaker.")],
+        [
+            SimpleNamespace(speaker="provider-a", text="First."),
+            SimpleNamespace(speaker="provider-b", text="Second."),
+            SimpleNamespace(speaker="provider-c", text="Third."),
+        ],
+    ],
+    ids=["one-speaker", "three-speakers"],
+)
+def test_transcription_requires_exactly_two_speakers(
+    recordings_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    segments: list[Any],
+) -> None:
+    fake_openai = FakeOpenAIClient(segments=segments)
+    settings = Settings(
+        recordings_dir=recordings_dir,
+        max_upload_mb=30,
+        openai_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings, transcription_client=fake_openai)) as client:
+        recording = upload_recording(client)
+        response = client.post(f"/recordings/{recording['id']}/transcription")
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Transcription must contain exactly two speakers"}
+    assert not (recordings_dir / f"{recording['id']}.transcript.json").exists()
+    assert "reason=unexpected_speaker_count" in caplog.text
 
 
 def test_transcription_requires_api_key(recordings_dir: Path) -> None:

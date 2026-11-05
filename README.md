@@ -1,12 +1,13 @@
 # Moodi backend
 
 Moodi is a small FastAPI service that receives audio recordings from the Moodi mobile app, saves
-them to local storage, and transcribes saved M4A or WAV recordings with OpenAI `gpt-transcribe`.
+them to local storage, and transcribes two-speaker M4A or WAV recordings with OpenAI
+`gpt-4o-transcribe-diarize`.
 Upload and transcription requests are synchronous: their responses are returned only after the
 requested result has been saved locally.
 
 This milestone intentionally has no authentication, database, Supabase integration, queue,
-worker, diarization, session analysis, or other AI processing.
+worker, session analysis, or other AI processing beyond diarized transcription.
 
 ## What is implemented
 
@@ -24,8 +25,8 @@ worker, diarization, session analysis, or other AI processing.
 - Ruff linting and formatting.
 - Docker and Docker Compose support with persistent local recording storage.
 - GitHub Actions checks for tests, linting, and formatting.
-- `POST /recordings/{recording_id}/transcription` for one-speaker transcription.
-- OpenAI `gpt-transcribe` integration with Serbian and English language hints.
+- `POST /recordings/{recording_id}/transcription` for two-speaker transcription.
+- OpenAI `gpt-4o-transcribe-diarize` integration with normalized speaker turns.
 - Atomic local transcript JSON storage.
 - Provider-error handling that does not expose OpenAI error details.
 - Structured application logs for lifecycle, uploads, and transcription outcomes.
@@ -71,7 +72,7 @@ cp .env.example .env
 | `RECORDINGS_DIR` | `./data/recordings` | Directory where finalized recordings are stored. |
 | `MAX_UPLOAD_MB` | `100` | Maximum accepted upload size in MiB. |
 | `OPENAI_API_KEY` | none | OpenAI API key used only by the backend. |
-| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-transcribe` | OpenAI transcription model. |
+| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-transcribe-diarize` | OpenAI diarization model. |
 | `PORT` | `8000` in Docker | HTTP port used by the container. Hosting platforms can override it. |
 
 Relative recording paths are resolved against the repository root. The application creates the
@@ -215,11 +216,19 @@ Successful response (`200`):
 ```json
 {
   "recording_id": "8fb3c678-5b52-4a57-b51d-a8d0b77ae193",
-  "text": "Ovo je tekst transkripcije.",
-  "languages": [
-    {"code": "sr"}
+  "text": "Kako se osećate? Osećam se anksiozno.",
+  "turns": [
+    {
+      "speaker": "speaker_1",
+      "text": "Kako se osećate?"
+    },
+    {
+      "speaker": "speaker_2",
+      "text": "Osećam se anksiozno."
+    }
   ],
-  "model": "gpt-transcribe",
+  "languages": [],
+  "model": "gpt-4o-transcribe-diarize",
   "status": "completed",
   "completed_at": "2026-11-03T12:00:00Z"
 }
@@ -230,8 +239,11 @@ The endpoint:
 1. Accepts only a UUID recording ID, never a client-provided filesystem path.
 2. Locates the previously saved recording inside `RECORDINGS_DIR`.
 3. Rejects files larger than OpenAI's 25 MB file-transcription limit before making an API call.
-4. Sends an M4A or WAV binary stream to `gpt-transcribe` with Serbian and English language hints.
-5. Returns only after saving `<uuid>.transcript.json` atomically beside the audio file.
+4. Requests diarized JSON from `gpt-4o-transcribe-diarize` with automatic audio chunking.
+5. Normalizes the first two distinct provider speakers to `speaker_1` and `speaker_2`, then merges
+   adjacent segments from the same speaker.
+6. Requires exactly two labeled speakers and returns only after saving
+   `<uuid>.transcript.json` atomically beside the audio file.
 
 Raw AAC remains accepted by the upload endpoint, but this transcription milestone rejects `.aac`
 with HTTP `415` because it is not in OpenAI's documented file-transcription input list. No audio
@@ -244,12 +256,13 @@ Important transcription error responses:
 | `404` | The recording UUID does not exist. |
 | `413` | The saved recording exceeds the 25 MB transcription limit. |
 | `415` | The saved recording format is not supported for transcription. |
-| `422` | The path parameter is not a valid UUID, or no speech was detected. |
+| `422` | No speech was detected, speaker labels are missing, or the result does not contain exactly two speakers. |
 | `502` | OpenAI failed or the completed transcript could not be saved. |
 | `503` | `OPENAI_API_KEY` is not configured. |
 
-Transcription currently assumes one speaker and returns plain text without speaker labels or word
-timestamps. It does not summarize, diagnose, interpret, or analyze the recording.
+Transcription returns neutral `speaker_1` and `speaker_2` turns. The labels are assigned by first
+appearance and do not identify which person is the therapist. The endpoint does not summarize,
+diagnose, interpret, or analyze the recording.
 
 ## Logging
 
@@ -264,8 +277,8 @@ docker compose logs --follow api
 Logs use stable event names such as `recording_saved`, `transcription_started`,
 `transcription_completed`, and `transcription_provider_failed`. A recording with no detected speech
 is logged as a `transcription_rejected` warning rather than an error. Logs include useful
-operational fields such as the server-generated recording ID, file size, duration, safe provider
-status code, and provider request ID.
+operational fields such as the server-generated recording ID, file size, duration, speaker and
+turn counts, safe provider status code, and provider request ID.
 
 Set `LOG_LEVEL` in `.env` to `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. The default is
 `INFO`:
@@ -317,7 +330,7 @@ docker run --rm \
   -e RECORDINGS_DIR=/app/data/recordings \
   -e MAX_UPLOAD_MB=100 \
   -e OPENAI_API_KEY="$OPENAI_API_KEY" \
-  -e OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe \
+  -e OPENAI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize \
   -v moodi_recordings:/app/data/recordings \
   moodi-backend
 ```
@@ -345,7 +358,8 @@ Free, and paid plans.
 2. Let Railway build the detected `Dockerfile`.
 3. Add a volume to the service and mount it at `/app/data/recordings`.
 4. Set `APP_ENV=testing`, `RECORDINGS_DIR=/app/data/recordings`, and `MAX_UPLOAD_MB=100`.
-5. Add `OPENAI_API_KEY` as a secret and set `OPENAI_TRANSCRIPTION_MODEL=gpt-transcribe`.
+5. Add `OPENAI_API_KEY` as a secret and set
+   `OPENAI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize`.
 6. Generate a public domain for the service.
 7. Use `/health` as the health-check path.
 
@@ -448,7 +462,9 @@ The current test suite verifies:
 - Empty uploads are rejected and leave no file behind.
 - Oversized uploads return HTTP `413` and their partial files are removed.
 - A malicious client filename cannot escape the recordings directory.
-- A saved M4A recording can be transcribed and its transcript JSON is persisted.
+- A saved M4A recording can be diarized into `speaker_1` and `speaker_2` turns and persisted.
+- Adjacent segments from the same speaker are merged.
+- Missing labels and results with other than two speakers are rejected.
 - Unknown and invalid recording IDs are rejected.
 - Oversized and raw AAC recordings are rejected before contacting OpenAI.
 - OpenAI failures preserve the original recording and do not leave a transcript.
