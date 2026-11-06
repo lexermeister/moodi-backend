@@ -31,15 +31,17 @@ def create_app(
             directory=application_settings.recordings_path,
             api_key=application_settings.openai_api_key,
             model=application_settings.openai_transcription_model,
+            role_model=application_settings.openai_role_attribution_model,
             client=transcription_client,
         )
         logger.info(
             "application_started app_env=%s recordings_dir=%s max_upload_mb=%s "
-            "transcription_model=%s openai_configured=%s",
+            "transcription_model=%s role_attribution_model=%s openai_configured=%s",
             application_settings.app_env,
             application_settings.recordings_path,
             application_settings.max_upload_mb,
             application_settings.openai_transcription_model,
+            application_settings.openai_role_attribution_model,
             bool(application_settings.openai_api_key),
         )
         try:

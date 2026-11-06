@@ -7,9 +7,11 @@ from app.core.logging import get_logger
 from app.schemas.transcriptions import TranscriptionLanguage, TranscriptionResponse, TranscriptTurn
 from app.services.recording_storage import RecordingNotFoundError, RecordingStorage
 from app.services.transcription import (
+    AmbiguousRoleAttributionError,
     DiarizationValidationError,
     NoSpeechDetectedError,
     RecordingTooLargeForTranscriptionError,
+    RoleAttributionProviderError,
     TranscriptionNotConfiguredError,
     TranscriptionProviderError,
     TranscriptionService,
@@ -84,6 +86,30 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(error),
         ) from error
+    except AmbiguousRoleAttributionError as error:
+        logger.warning(
+            "role_attribution_ambiguous recording_id=%s duration_ms=%s",
+            recording_id,
+            round((monotonic() - started_at) * 1000),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    except RoleAttributionProviderError as error:
+        logger.error(
+            "role_attribution_provider_failed recording_id=%s provider_error_type=%s "
+            "status_code=%s request_id=%s duration_ms=%s",
+            recording_id,
+            error.provider_error_type,
+            error.status_code,
+            error.request_id,
+            round((monotonic() - started_at) * 1000),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not assign transcript roles",
+        ) from error
     except TranscriptionProviderError as error:
         logger.error(
             "transcription_provider_failed recording_id=%s provider_error_type=%s "
@@ -111,10 +137,11 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
 
     logger.info(
-        "transcription_completed recording_id=%s model=%s speaker_count=2 turn_count=%s "
-        "language_count=%s duration_ms=%s",
+        "transcription_completed recording_id=%s model=%s role_model=%s "
+        "speaker_count=2 turn_count=%s language_count=%s duration_ms=%s",
         recording_id,
         completed.model,
+        completed.role_model,
         len(completed.turns),
         len(completed.languages),
         round((monotonic() - started_at) * 1000),
@@ -123,9 +150,11 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
     return TranscriptionResponse(
         recording_id=completed.recording_id,
         text=completed.text,
-        turns=[TranscriptTurn(speaker=turn.speaker, text=turn.text) for turn in completed.turns],
+        turns=[TranscriptTurn(role=turn.role, text=turn.text) for turn in completed.turns],
         languages=[TranscriptionLanguage(code=code) for code in completed.languages],
         model=completed.model,
+        role_model=completed.role_model,
+        role_prompt_version=completed.role_prompt_version,
         status="completed",
         completed_at=completed.completed_at,
     )

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     max_upload_mb: int = Field(default=100, gt=0)
     openai_api_key: str | None = None
     openai_transcription_model: str = "gpt-4o-transcribe-diarize"
+    openai_role_attribution_model: str = "gpt-4o-mini"
 
     @property
     def recordings_path(self) -> Path:
