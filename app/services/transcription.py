@@ -370,6 +370,16 @@ class TranscriptionService:
         turns: list[DiarizedTurn] = []
 
         for segment in segments:
+            segment_text = cls._segment_value(segment, "text")
+            if segment_text is None or (isinstance(segment_text, str) and not segment_text.strip()):
+                continue
+            if not isinstance(segment_text, str):
+                raise DiarizationValidationError(
+                    "A transcript segment contained invalid speech data",
+                    reason="invalid_segment_text",
+                )
+            normalized_text = segment_text.strip()
+
             speaker = cls._segment_value(segment, "speaker")
             if not isinstance(speaker, str) or not speaker.strip():
                 raise DiarizationValidationError(
@@ -377,13 +387,6 @@ class TranscriptionService:
                     reason="missing_speaker_label",
                 )
             speaker = speaker.strip()
-
-            segment_text = cls._segment_value(segment, "text")
-            if not isinstance(segment_text, str) or not segment_text.strip():
-                raise DiarizationValidationError(
-                    "A transcript segment did not include speech",
-                    reason="empty_segment",
-                )
 
             if speaker not in speaker_labels:
                 if len(speaker_labels) == EXPECTED_SPEAKER_COUNT:
@@ -397,7 +400,6 @@ class TranscriptionService:
                 speaker_labels[speaker] = normalized_speaker
 
             normalized_speaker = speaker_labels[speaker]
-            normalized_text = segment_text.strip()
             if turns and turns[-1].speaker == normalized_speaker:
                 previous = turns[-1]
                 turns[-1] = DiarizedTurn(
@@ -406,6 +408,9 @@ class TranscriptionService:
                 )
             else:
                 turns.append(DiarizedTurn(speaker=normalized_speaker, text=normalized_text))
+
+        if not turns:
+            raise NoSpeechDetectedError("No speech was detected in the recording")
 
         if len(speaker_labels) != EXPECTED_SPEAKER_COUNT:
             raise DiarizationValidationError(

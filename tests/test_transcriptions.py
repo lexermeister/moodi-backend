@@ -366,6 +366,63 @@ def test_no_speech_returns_validation_response_and_does_not_save_transcript(
     assert fake_openai.responses.calls == []
 
 
+def test_transcription_ignores_silent_segments(
+    recordings_dir: Path,
+) -> None:
+    segments = [
+        SimpleNamespace(speaker=None, text=""),
+        SimpleNamespace(speaker="provider-silence", text="   "),
+        SimpleNamespace(speaker="provider-a", text="How have you been feeling?"),
+        SimpleNamespace(speaker=None, text=None),
+        SimpleNamespace(speaker="provider-b", text="I've been anxious."),
+        SimpleNamespace(speaker="provider-c", text=""),
+    ]
+    fake_openai = FakeOpenAIClient(segments=segments)
+    settings = Settings(
+        recordings_dir=recordings_dir,
+        max_upload_mb=30,
+        openai_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings, transcription_client=fake_openai)) as client:
+        recording = upload_recording(client)
+        response = client.post(f"/recordings/{recording['id']}/transcription")
+
+    assert response.status_code == 200
+    assert response.json()["turns"] == [
+        {"role": "therapist", "text": "How have you been feeling?"},
+        {"role": "client", "text": "I've been anxious."},
+    ]
+    assert len(fake_openai.responses.calls) == 1
+
+
+def test_all_silent_segments_are_reported_as_no_speech(
+    recordings_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    segments = [
+        SimpleNamespace(speaker=None, text=""),
+        SimpleNamespace(speaker="provider-silence", text="   "),
+        SimpleNamespace(speaker=None, text=None),
+    ]
+    fake_openai = FakeOpenAIClient(segments=segments)
+    settings = Settings(
+        recordings_dir=recordings_dir,
+        max_upload_mb=30,
+        openai_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings, transcription_client=fake_openai)) as client:
+        recording = upload_recording(client)
+        response = client.post(f"/recordings/{recording['id']}/transcription")
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "No speech was detected in the recording"}
+    assert not (recordings_dir / f"{recording['id']}.transcript.json").exists()
+    assert "reason=no_speech" in caplog.text
+    assert fake_openai.responses.calls == []
+
+
 def test_transcription_rejects_response_without_speaker_segments(
     recordings_dir: Path,
     caplog: pytest.LogCaptureFixture,
