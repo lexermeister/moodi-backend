@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from app.core.logging import get_logger
 from app.schemas.transcriptions import TranscriptionLanguage, TranscriptionResponse, TranscriptTurn
 from app.services.recording_storage import RecordingNotFoundError, RecordingStorage
+from app.services.transcript_store import TranscriptStorageError
 from app.services.transcription import (
     AmbiguousRoleAttributionError,
     DiarizationValidationError,
@@ -15,7 +16,6 @@ from app.services.transcription import (
     TranscriptionNotConfiguredError,
     TranscriptionProviderError,
     TranscriptionService,
-    TranscriptStorageError,
     UnsupportedTranscriptionFormatError,
 )
 

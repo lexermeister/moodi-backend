@@ -3,12 +3,13 @@
 Moodi is a small FastAPI service that receives audio recordings from the Moodi mobile app, saves
 them to local storage, and transcribes two-speaker M4A or WAV recordings with OpenAI
 `gpt-4o-transcribe-diarize`. A second structured model call maps the diarized speakers to
-`client` and `therapist` roles.
-Upload and transcription requests are synchronous: their responses are returned only after the
-requested result has been saved locally.
+`client` and `therapist` roles. A third structured call produces evidence-linked, client-owned
+session insights from the saved transcript.
+Upload, transcription, and insight requests are synchronous: their responses are returned only
+after the requested artifact has been saved locally.
 
 This milestone intentionally has no authentication, database, Supabase integration, queue,
-worker, or session analysis beyond transcription and role attribution.
+worker, reminders, or clinical-record integration.
 
 ## What is implemented
 
@@ -30,6 +31,9 @@ worker, or session analysis beyond transcription and role attribution.
 - OpenAI `gpt-4o-transcribe-diarize` integration with normalized speaker turns.
 - Structured role attribution that returns `client` and `therapist` turns or fails as ambiguous.
 - Atomic local transcript JSON storage.
+- `POST /recordings/{recording_id}/insights` for evidence-linked session insights.
+- Idempotent transcript and insight generation backed by versioned local artifacts.
+- Application-side validation of model-generated evidence and cross references.
 - Provider-error handling that does not expose OpenAI error details.
 - Structured application logs for lifecycle, uploads, and transcription outcomes.
 
@@ -45,15 +49,21 @@ app/
     health.py              Health endpoint
     recordings.py          Recording upload endpoint
     transcriptions.py      Saved-recording transcription endpoint
+    session_insights.py    Saved-transcript insight endpoint
   core/
     config.py              Environment-backed settings
     logging.py             Application logger setup
   schemas/
     recordings.py          Recording response model
     transcriptions.py      Transcription response models
+    session_insights.py    Structured insight request and response models
   services/
     recording_storage.py   Upload validation and filesystem storage
-    transcription.py       OpenAI request and transcript storage
+    transcript_store.py    Atomic completed-transcript persistence
+    transcription.py       OpenAI transcription, role, and insight provider calls
+    session_insights.py    Insight validation, caching, and persistence
+  prompts/
+    session_insights_v0_2.txt  Versioned insight-generation instructions
 tests/                     Automated tests
 Dockerfile                 Production container image
 compose.yaml               Local container setup and recordings volume
@@ -76,6 +86,7 @@ cp .env.example .env
 | `OPENAI_API_KEY` | none | OpenAI API key used only by the backend. |
 | `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-transcribe-diarize` | OpenAI diarization model. |
 | `OPENAI_ROLE_ATTRIBUTION_MODEL` | `gpt-4o-mini` | Model that maps diarized speakers to client and therapist roles. |
+| `OPENAI_INSIGHTS_MODEL` | `gpt-4o-mini` | Model that produces structured session insights. |
 | `PORT` | `8000` in Docker | HTTP port used by the container. Hosting platforms can override it. |
 
 Relative recording paths are resolved against the repository root. The application creates the
@@ -271,6 +282,32 @@ The API returns `client` and `therapist` turns. Normalized `speaker_1` and `spea
 only in the stored transcript for traceability. The role model may return an ambiguous decision;
 the endpoint then rejects the result rather than guessing. It does not summarize, diagnose, or
 rewrite the recording.
+
+### Generate session insights
+
+```http
+POST /recordings/{recording_id}/insights
+Content-Type: application/json
+
+{
+  "session_date": "2026-11-06"
+}
+```
+
+The endpoint reads the server-side completed transcript, assigns stable segment IDs, calculates a
+source hash, and requests a structured insight result. It validates every fact, action, section,
+review flag, exact action excerpt, and cross reference before atomically saving
+`<uuid>.insights.json`. Repeating the same request returns the cached artifact without another model
+call. A schema-valid `insufficient_source` result is returned as HTTP `200`.
+
+Important insight error responses:
+
+| Status | Meaning |
+| --- | --- |
+| `404` | The recording UUID does not exist. |
+| `409` | No completed transcript exists yet. |
+| `502` | Generation, evidence validation, or insight storage failed. |
+| `503` | `OPENAI_API_KEY` is not configured. |
 
 ## Logging
 
@@ -480,6 +517,10 @@ The current test suite verifies:
 - Oversized and raw AAC recordings are rejected before contacting OpenAI.
 - OpenAI failures preserve the original recording and do not leave a transcript.
 - Missing OpenAI configuration returns a service-unavailable response.
+- Completed transcripts and matching insights are reused without repeated provider calls.
+- Insight facts and section references must resolve to real transcript segments and facts.
+- Invalid insight evidence gets one bounded regeneration attempt and is never persisted.
+- Insight provider failures do not expose provider details or leave partial artifacts.
 
 Tests use a temporary recordings directory and do not write into the development storage folder.
 
@@ -515,15 +556,15 @@ Before committing, confirm that:
 
 ## Current milestone boundaries
 
-This repository currently provides durable local recording ingestion only. These features are
-deliberately deferred:
+This repository currently provides durable local recording, transcription, role attribution, and
+session insight generation. These features are deliberately deferred:
 
 - User authentication and authorization.
 - Database metadata and recording ownership.
 - Supabase or other object storage.
 - Audio-content validation beyond extension and MIME screening.
-- Transcription, analysis, or AI processing.
 - Queues, workers, retries, and background jobs.
+- Reminders, action execution, scheduling, or writes to clinical records.
 - Horizontal scaling across multiple application replicas.
 
 The next storage milestone should replace the local volume with object storage before introducing

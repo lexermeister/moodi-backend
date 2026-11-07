@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_transcription_model: str = "gpt-4o-transcribe-diarize"
     openai_role_attribution_model: str = "gpt-4o-mini"
+    openai_insights_model: str = "gpt-4o-mini"
 
     @property
     def recordings_path(self) -> Path:
