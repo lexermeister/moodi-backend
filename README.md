@@ -1,7 +1,7 @@
 # Moodi backend
 
 Moodi is a small FastAPI service that receives audio recordings from the Moodi mobile app, saves
-them to local storage, and transcribes two-speaker M4A or WAV recordings with OpenAI
+them to local storage, and transcribes one- or two-speaker M4A or WAV recordings with OpenAI
 `gpt-4o-transcribe-diarize`. A second structured model call maps the diarized speakers to
 `client` and `therapist` roles. A third structured call produces evidence-linked, client-owned
 session insights from the saved transcript.
@@ -27,7 +27,7 @@ worker, reminders, or clinical-record integration.
 - Ruff linting and formatting.
 - Docker and Docker Compose support with persistent local recording storage.
 - GitHub Actions checks for tests, linting, and formatting.
-- `POST /recordings/{recording_id}/transcription` for two-speaker transcription.
+- `POST /recordings/{recording_id}/transcription` for one- or two-speaker transcription.
 - OpenAI `gpt-4o-transcribe-diarize` integration with normalized speaker turns.
 - Structured role attribution that returns `client` and `therapist` turns or fails as ambiguous.
 - Atomic local transcript JSON storage.
@@ -258,8 +258,8 @@ The endpoint:
 4. Requests diarized JSON from `gpt-4o-transcribe-diarize` with automatic audio chunking.
 5. Normalizes the first two distinct provider speakers to `speaker_1` and `speaker_2`, then merges
    adjacent segments from the same speaker.
-6. Requires exactly two labeled speakers, then uses a structured LLM response to assign exactly one
-   `therapist` and one `client` role without changing the transcript text.
+6. Treats a single labeled speaker as the `client`. For two labeled speakers, it uses a structured
+   LLM response to assign exactly one `therapist` and one `client` role without changing the text.
 7. Returns only after saving
    `<uuid>.transcript.json` atomically beside the audio file.
 
@@ -274,7 +274,7 @@ Important transcription error responses:
 | `404` | The recording UUID does not exist. |
 | `413` | The saved recording exceeds the 25 MB transcription limit. |
 | `415` | The saved recording format is not supported for transcription. |
-| `422` | No speech was detected, speaker labels are missing, the result does not contain exactly two speakers, or the roles are ambiguous. |
+| `422` | No speech was detected, speaker labels are missing, more than two speakers were detected, or two-speaker roles are ambiguous. |
 | `502` | OpenAI transcription or role attribution failed, or the completed transcript could not be saved. |
 | `503` | `OPENAI_API_KEY` is not configured. |
 
@@ -511,7 +511,7 @@ The current test suite verifies:
 - A malicious client filename cannot escape the recordings directory.
 - A saved M4A recording can be diarized and returned as `client` and `therapist` turns.
 - Adjacent segments from the same speaker are merged.
-- Missing labels and results with other than two speakers are rejected.
+- Missing labels and results with more than two speakers are rejected; one speaker is accepted as the client.
 - Ambiguous roles and role-attribution provider failures do not leave a completed transcript.
 - Unknown and invalid recording IDs are rejected.
 - Oversized and raw AAC recordings are rejected before contacting OpenAI.

@@ -20,7 +20,7 @@ class TranscriptionResponse(BaseModel):
     turns: list[TranscriptTurn]
     languages: list[TranscriptionLanguage]
     model: str
-    role_model: str
-    role_prompt_version: str
+    role_model: str | None
+    role_prompt_version: str | None
     status: Literal["completed"]
     completed_at: datetime

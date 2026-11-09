@@ -21,7 +21,7 @@ from app.services.transcript_store import (
 
 OPENAI_MAX_FILE_BYTES = 25 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {".m4a", ".wav"}
-EXPECTED_SPEAKER_COUNT = 2
+MAX_SPEAKER_COUNT = 2
 ROLE_ATTRIBUTION_PROMPT_VERSION = "v1"
 ROLE_ATTRIBUTION_INSTRUCTIONS = """\
 You assign the conversational roles in a transcript of exactly two diarized speakers.
@@ -304,8 +304,27 @@ class TranscriptionService:
             ) from error
 
         diarized_turns = self._normalize_turns(response)
-        attribution = self.role_attributor.attribute(recording_id, client, diarized_turns)
-        turns = self._apply_roles(diarized_turns, attribution)
+        speaker_count = len({turn.speaker for turn in diarized_turns})
+        if speaker_count == 1:
+            turns = [
+                TranscriptTurn(
+                    source_speaker=turn.speaker,
+                    role="client",
+                    text=turn.text,
+                )
+                for turn in diarized_turns
+            ]
+            role_model = None
+            role_prompt_version = None
+            logger.info(
+                "role_attribution_skipped recording_id=%s reason=single_speaker",
+                recording_id,
+            )
+        else:
+            attribution = self.role_attributor.attribute(recording_id, client, diarized_turns)
+            turns = self._apply_roles(diarized_turns, attribution)
+            role_model = attribution.model
+            role_prompt_version = attribution.prompt_version
         text = " ".join(turn.text for turn in turns)
 
         completed = CompletedTranscription(
@@ -314,8 +333,8 @@ class TranscriptionService:
             turns=turns,
             languages=self._language_codes(getattr(response, "languages", [])),
             model=self.model,
-            role_model=attribution.model,
-            role_prompt_version=attribution.prompt_version,
+            role_model=role_model,
+            role_prompt_version=role_prompt_version,
             completed_at=datetime.now(UTC),
         )
         self.transcript_store.save(completed)
@@ -389,9 +408,9 @@ class TranscriptionService:
             speaker = speaker.strip()
 
             if speaker not in speaker_labels:
-                if len(speaker_labels) == EXPECTED_SPEAKER_COUNT:
+                if len(speaker_labels) == MAX_SPEAKER_COUNT:
                     raise DiarizationValidationError(
-                        "Transcription must contain exactly two speakers",
+                        "Transcription cannot contain more than two speakers",
                         reason="unexpected_speaker_count",
                     )
                 normalized_speaker: SourceSpeaker = (
@@ -411,12 +430,6 @@ class TranscriptionService:
 
         if not turns:
             raise NoSpeechDetectedError("No speech was detected in the recording")
-
-        if len(speaker_labels) != EXPECTED_SPEAKER_COUNT:
-            raise DiarizationValidationError(
-                "Transcription must contain exactly two speakers",
-                reason="unexpected_speaker_count",
-            )
 
         return turns
 

@@ -471,23 +471,58 @@ def test_transcription_rejects_segment_without_speaker_label(
     assert fake_openai.responses.calls == []
 
 
-@pytest.mark.parametrize(
-    "segments",
-    [
-        [SimpleNamespace(speaker="provider-a", text="Only one speaker.")],
-        [
-            SimpleNamespace(speaker="provider-a", text="First."),
-            SimpleNamespace(speaker="provider-b", text="Second."),
-            SimpleNamespace(speaker="provider-c", text="Third."),
-        ],
-    ],
-    ids=["one-speaker", "three-speakers"],
-)
-def test_transcription_requires_exactly_two_speakers(
+def test_single_speaker_is_treated_as_client(
+    recordings_dir: Path,
+) -> None:
+    segments = [
+        SimpleNamespace(speaker="provider-a", text="I want to capture a thought."),
+        SimpleNamespace(speaker="provider-a", text="I felt calmer today."),
+    ]
+    fake_openai = FakeOpenAIClient(segments=segments)
+    settings = Settings(
+        recordings_dir=recordings_dir,
+        max_upload_mb=30,
+        openai_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings, transcription_client=fake_openai)) as client:
+        recording = upload_recording(client)
+        response = client.post(f"/recordings/{recording['id']}/transcription")
+
+    assert response.status_code == 200
+    assert response.json()["turns"] == [
+        {
+            "role": "client",
+            "text": "I want to capture a thought. I felt calmer today.",
+        }
+    ]
+    assert response.json()["role_model"] is None
+    assert response.json()["role_prompt_version"] is None
+    assert fake_openai.responses.calls == []
+
+    saved = json.loads(
+        (recordings_dir / f"{recording['id']}.transcript.json").read_text(encoding="utf-8")
+    )
+    assert saved["turns"] == [
+        {
+            "speaker": "speaker_1",
+            "role": "client",
+            "text": "I want to capture a thought. I felt calmer today.",
+        }
+    ]
+    assert saved["role_model"] is None
+    assert saved["role_prompt_version"] is None
+
+
+def test_transcription_rejects_more_than_two_speakers(
     recordings_dir: Path,
     caplog: pytest.LogCaptureFixture,
-    segments: list[Any],
 ) -> None:
+    segments = [
+        SimpleNamespace(speaker="provider-a", text="First."),
+        SimpleNamespace(speaker="provider-b", text="Second."),
+        SimpleNamespace(speaker="provider-c", text="Third."),
+    ]
     fake_openai = FakeOpenAIClient(segments=segments)
     settings = Settings(
         recordings_dir=recordings_dir,
@@ -500,7 +535,7 @@ def test_transcription_requires_exactly_two_speakers(
         response = client.post(f"/recordings/{recording['id']}/transcription")
 
     assert response.status_code == 422
-    assert response.json() == {"detail": "Transcription must contain exactly two speakers"}
+    assert response.json() == {"detail": "Transcription cannot contain more than two speakers"}
     assert not (recordings_dir / f"{recording['id']}.transcript.json").exists()
     assert "reason=unexpected_speaker_count" in caplog.text
     assert fake_openai.responses.calls == []

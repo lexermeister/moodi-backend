@@ -138,10 +138,11 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
 
     logger.info(
         "transcription_completed recording_id=%s model=%s role_model=%s "
-        "speaker_count=2 turn_count=%s language_count=%s duration_ms=%s",
+        "speaker_count=%s turn_count=%s language_count=%s duration_ms=%s",
         recording_id,
         completed.model,
         completed.role_model,
+        len({turn.source_speaker for turn in completed.turns}),
         len(completed.turns),
         len(completed.languages),
         round((monotonic() - started_at) * 1000),

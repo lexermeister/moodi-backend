@@ -29,8 +29,8 @@ class CompletedTranscription:
     turns: list[TranscriptTurn]
     languages: list[str]
     model: str
-    role_model: str
-    role_prompt_version: str
+    role_model: str | None
+    role_prompt_version: str | None
     completed_at: datetime
 
 
