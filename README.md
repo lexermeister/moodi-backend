@@ -63,7 +63,7 @@ app/
     transcription.py       OpenAI transcription, role, and insight provider calls
     session_insights.py    Insight validation, caching, and persistence
   prompts/
-    session_insights_v0_2.txt  Versioned insight-generation instructions
+    session_insights_v0_3.txt  Versioned insight-generation instructions
 tests/                     Automated tests
 Dockerfile                 Production container image
 compose.yaml               Local container setup and recordings volume

@@ -51,7 +51,7 @@ def create_app(
             directory=application_settings.recordings_path,
             transcript_store=transcript_store,
             generator=insights_generator,
-            prompt_path=Path(__file__).resolve().parent / "prompts" / "session_insights_v0_2.txt",
+            prompt_path=Path(__file__).resolve().parent / "prompts" / "session_insights_v0_3.txt",
         )
         logger.info(
             "application_started app_env=%s recordings_dir=%s max_upload_mb=%s "

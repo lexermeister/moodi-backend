@@ -14,7 +14,7 @@ from app.core.logging import get_logger
 from app.schemas.session_insights import SessionInsightsResponse, SessionInsightsResult
 from app.services.transcript_store import TranscriptStore
 
-SESSION_INSIGHTS_PROMPT_VERSION = "v0.2"
+SESSION_INSIGHTS_PROMPT_VERSION = "v0.3"
 MAX_GENERATION_ATTEMPTS = 2
 logger = get_logger("services.session_insights")
 
@@ -313,21 +313,15 @@ class SessionInsightsService:
             raise InsightsValidationError(
                 "Section keys are duplicated", reason="duplicate_sections"
             )
-        known_facts = set(fact_ids)
         known_actions = set(action_ids)
         for section in result.sections:
             if not section.heading.strip() or not section.bullets:
                 raise InsightsValidationError("A section is empty", reason="empty_section")
             for bullet in section.bullets:
-                if (
-                    not bullet.text.strip()
-                    or not (bullet.fact_ids or bullet.action_ids)
-                    or not set(bullet.fact_ids) <= known_facts
-                    or not set(bullet.action_ids) <= known_actions
-                ):
+                if not bullet.text.strip():
                     raise InsightsValidationError(
-                        "A section bullet has invalid references",
-                        reason="invalid_bullet_references",
+                        "A section bullet is empty",
+                        reason="empty_bullet",
                     )
 
         for flag in result.review_flags:
