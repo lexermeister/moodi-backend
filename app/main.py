@@ -45,6 +45,7 @@ def create_app(
         insights_generator = OpenAISessionInsightsGenerator(
             api_key=application_settings.openai_api_key,
             model=application_settings.openai_insights_model,
+            reasoning_effort=application_settings.openai_insights_reasoning_effort,
             client=transcription_client,
         )
         application.state.session_insights_service = SessionInsightsService(
@@ -56,6 +57,7 @@ def create_app(
         logger.info(
             "application_started app_env=%s recordings_dir=%s max_upload_mb=%s "
             "transcription_model=%s role_attribution_model=%s insights_model=%s "
+            "insights_reasoning_effort=%s "
             "openai_configured=%s",
             application_settings.app_env,
             application_settings.recordings_path,
@@ -63,6 +65,7 @@ def create_app(
             application_settings.openai_transcription_model,
             application_settings.openai_role_attribution_model,
             application_settings.openai_insights_model,
+            application_settings.openai_insights_reasoning_effort,
             bool(application_settings.openai_api_key),
         )
         try:

@@ -62,6 +62,7 @@ class InsightsStorageError(SessionInsightsError):
 
 class InsightsGenerator(Protocol):
     model: str
+    reasoning_effort: str
 
     def generate(
         self,
@@ -215,6 +216,7 @@ class SessionInsightsService:
             {
                 "input": input_data,
                 "model": self.generator.model,
+                "reasoning_effort": self.generator.reasoning_effort,
                 "prompt_version": SESSION_INSIGHTS_PROMPT_VERSION,
             },
             ensure_ascii=False,
@@ -235,8 +237,7 @@ class SessionInsightsService:
         segments = input_data["segments"]
         if not isinstance(segments, list):
             raise InsightsValidationError("Input segments are invalid", reason="invalid_input")
-        segment_text = {segment["id"]: segment["text"] for segment in segments}
-        source_ids = set(segment_text)
+        source_ids = {segment["id"] for segment in segments}
 
         fact_ids = [fact.id for fact in result.facts]
         action_ids = [action.id for action in result.action_mentions]
@@ -269,12 +270,6 @@ class SessionInsightsService:
             ):
                 raise InsightsValidationError(
                     "An action has invalid evidence", reason="invalid_action_evidence"
-                )
-            if not any(
-                action.source_excerpt in segment_text[source_id] for source_id in action.source_ids
-            ):
-                raise InsightsValidationError(
-                    "An action excerpt is not exact", reason="inexact_action_excerpt"
                 )
             if action.eligibility == "review_candidate" and (
                 action.status != "agreed" or action.actor != "client"

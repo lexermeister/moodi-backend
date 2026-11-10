@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.main import create_app
 from app.schemas.session_insights import (
+    ActionMention,
     InsightBullet,
     InsightFact,
     InsightSection,
@@ -42,10 +43,12 @@ class FakeResponses:
         *,
         invalid_insights_count: int = 0,
         invalid_bullet_references: bool = False,
+        inexact_action_excerpt: bool = False,
         insights_error: Exception | None = None,
     ) -> None:
         self.invalid_insights_count = invalid_insights_count
         self.invalid_bullet_references = invalid_bullet_references
+        self.inexact_action_excerpt = inexact_action_excerpt
         self.insights_error = insights_error
         self.calls: list[dict[str, Any]] = []
         self.insights_call_count = 0
@@ -82,7 +85,27 @@ class FakeResponses:
                         source_ids=[source_id],
                     )
                 ],
-                action_mentions=[],
+                action_mentions=(
+                    [
+                        ActionMention(
+                            id="A1",
+                            status="agreed",
+                            eligibility="review_candidate",
+                            actor="client",
+                            activity="Notice anxiety",
+                            source_excerpt="A paraphrase that is not in the transcript.",
+                            frequency=None,
+                            timing=None,
+                            duration=None,
+                            condition=None,
+                            endpoint=None,
+                            replaces_action_id=None,
+                            source_ids=["S2"],
+                        )
+                    ]
+                    if self.inexact_action_excerpt
+                    else []
+                ),
                 sections=[
                     InsightSection(
                         key="today_focus",
@@ -109,6 +132,7 @@ class FakeOpenAIClient:
         *,
         invalid_insights_count: int = 0,
         invalid_bullet_references: bool = False,
+        inexact_action_excerpt: bool = False,
         insights_error: Exception | None = None,
     ) -> None:
         self.transcriptions = FakeTranscriptions()
@@ -116,6 +140,7 @@ class FakeOpenAIClient:
         self.responses = FakeResponses(
             invalid_insights_count=invalid_insights_count,
             invalid_bullet_references=invalid_bullet_references,
+            inexact_action_excerpt=inexact_action_excerpt,
             insights_error=insights_error,
         )
 
@@ -138,7 +163,8 @@ def configured_client(
         recordings_dir=recordings_dir,
         max_upload_mb=30,
         openai_api_key="test-key",
-        openai_insights_model="gpt-4o-mini",
+        openai_insights_model="gpt-6-luna",
+        openai_insights_reasoning_effort="none",
     )
     with TestClient(create_app(settings, transcription_client=fake_openai)) as client:
         yield client
@@ -193,7 +219,7 @@ def test_insights_are_structured_saved_and_cached(
     assert payload["recording_id"] == recording["id"]
     assert payload["source_version"].startswith("sha256:")
     assert payload["prompt_version"] == "v0.3"
-    assert payload["model"] == "gpt-4o-mini"
+    assert payload["model"] == "gpt-6-luna"
     assert payload["result"]["status"] == "draft"
     assert payload["result"]["sections"][0]["heading"] == "Today's focus"
     assert fake_openai.responses.insights_call_count == 1
@@ -203,6 +229,8 @@ def test_insights_are_structured_saved_and_cached(
     ]
     assert len(insight_calls) == 1
     assert insight_calls[0]["store"] is False
+    assert insight_calls[0]["model"] == "gpt-6-luna"
+    assert insight_calls[0]["reasoning"] == {"effort": "none"}
     source_input = json.loads(insight_calls[0]["input"][1]["content"].split("\n", 1)[1])
     assert source_input["segments"] == [
         {
@@ -268,6 +296,21 @@ def test_invalid_bullet_references_do_not_reject_insights(
     assert fake_openai.responses.insights_call_count == 1
     bullet = response.json()["result"]["sections"][0]["bullets"][0]
     assert bullet["fact_ids"] == ["F999"]
+
+
+def test_inexact_action_excerpt_does_not_reject_insights(
+    recordings_dir: Path,
+) -> None:
+    fake_openai = FakeOpenAIClient(inexact_action_excerpt=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording = upload_recording(client)
+        assert client.post(f"/recordings/{recording['id']}/transcription").status_code == 200
+        response = client.post(f"/recordings/{recording['id']}/insights", json={})
+
+    assert response.status_code == 200
+    assert fake_openai.responses.insights_call_count == 1
+    action = response.json()["result"]["action_mentions"][0]
+    assert action["source_excerpt"] == "A paraphrase that is not in the transcript."
 
 
 def test_provider_failure_does_not_expose_details(

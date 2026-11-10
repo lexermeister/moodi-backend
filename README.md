@@ -86,7 +86,8 @@ cp .env.example .env
 | `OPENAI_API_KEY` | none | OpenAI API key used only by the backend. |
 | `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-transcribe-diarize` | OpenAI diarization model. |
 | `OPENAI_ROLE_ATTRIBUTION_MODEL` | `gpt-4o-mini` | Model that maps diarized speakers to client and therapist roles. |
-| `OPENAI_INSIGHTS_MODEL` | `gpt-4o-mini` | Model that produces structured session insights. |
+| `OPENAI_INSIGHTS_MODEL` | `gpt-6-luna` | Model that produces structured session insights. |
+| `OPENAI_INSIGHTS_REASONING_EFFORT` | `none` | Reasoning effort for session insights; `none` favors low latency. |
 | `PORT` | `8000` in Docker | HTTP port used by the container. Hosting platforms can override it. |
 
 Relative recording paths are resolved against the repository root. The application creates the

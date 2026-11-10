@@ -192,10 +192,12 @@ class OpenAISessionInsightsGenerator:
         self,
         api_key: str | None,
         model: str,
+        reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"],
         client: TranscriptionClient | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
+        self.reasoning_effort = reasoning_effort
         self.client = client
 
     def generate(
@@ -216,6 +218,7 @@ class OpenAISessionInsightsGenerator:
         try:
             response = client.responses.parse(
                 model=self.model,
+                reasoning={"effort": self.reasoning_effort},
                 input=[
                     {"role": "system", "content": prompt},
                     {
