@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 type InsightVariant = Literal["P01", "P02", "P03"]
 type InsightSectionKey = Literal[
@@ -40,26 +40,71 @@ class InsightFact(StrictModel):
     source_ids: list[str]
 
 
-class ActionMention(StrictModel):
+class MoodScaleDefinition(StrictModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
+
+    id: str = Field(min_length=1, max_length=120)
+    construct_name: Literal["overall_day_mood"] = Field(alias="construct")
+    minimum: Literal[0]
+    maximum: Literal[10]
+    minimum_label: str = Field(min_length=1, max_length=80)
+    maximum_label: str = Field(min_length=1, max_length=80)
+    direction: Literal["low_to_high"]
+    version: str = Field(min_length=1, max_length=40)
+
+
+class RecordMoodConfiguration(StrictModel):
+    input_kind: Literal["numeric_0_10", "label"]
+    context_enabled: bool = False
+    scale: MoodScaleDefinition | None = None
+    scale_origin: Literal["session", "moodi_default"] | None = None
+
+    @model_validator(mode="after")
+    def validate_scale(self) -> "RecordMoodConfiguration":
+        if self.input_kind == "numeric_0_10" and self.scale is None:
+            raise ValueError("Numeric mood configuration requires scale metadata")
+        if self.input_kind == "numeric_0_10" and self.scale_origin is None:
+            self.scale_origin = "session"
+        if self.input_kind == "label" and self.scale is not None:
+            raise ValueError("Label mood configuration cannot include a numeric scale")
+        if self.input_kind == "label" and self.scale_origin is not None:
+            raise ValueError("Label mood configuration cannot include a scale origin")
+        return self
+
+
+class RecordMoodCandidate(StrictModel):
     id: str
-    status: Literal["agreed", "suggested", "declined", "unresolved", "superseded"]
-    eligibility: Literal["review_candidate", "clarify", "not_eligible"]
-    actor: Literal["client", "therapist", "shared", "unknown"]
-    activity: str
+    type: Literal["record_mood"]
+    state: Literal["review_ready"]
+    actor: Literal["client"]
+    exact_task: str
     source_excerpt: str
     frequency: str | None
     timing: str | None
-    duration: str | None
-    condition: str | None
-    endpoint: str | None
-    replaces_action_id: str | None
+    reference_period: str | None
+    start_date: date | None
+    end_date: date | None
+    duration_days: Literal[14] = 14
+    configuration: RecordMoodConfiguration | None
+    unknowns: list[str]
     source_ids: list[str]
+
+    @model_validator(mode="after")
+    def validate_review_state(self) -> "RecordMoodCandidate":
+        if self.state == "review_ready" and (
+            self.configuration is None
+            or not self.frequency
+            or not self.reference_period
+            or self.unknowns
+        ):
+            raise ValueError("Review-ready mood candidate is incomplete")
+        return self
 
 
 class InsightBullet(StrictModel):
     text: str
     fact_ids: list[str]
-    action_ids: list[str]
+    candidate_ids: list[str]
     module: (
         Literal[
             "practice_details",
@@ -90,7 +135,7 @@ class InsightReviewFlag(StrictModel):
     ]
     detail: str
     source_ids: list[str]
-    action_ids: list[str]
+    candidate_ids: list[str]
 
 
 class SessionInsightsResult(StrictModel):
@@ -102,7 +147,7 @@ class SessionInsightsResult(StrictModel):
     secondary_variant: InsightVariant | None
     selection_note: str | None
     facts: list[InsightFact]
-    action_mentions: list[ActionMention]
+    action_candidates: list[RecordMoodCandidate]
     sections: list[InsightSection]
     review_flags: list[InsightReviewFlag]
 
@@ -126,7 +171,7 @@ class SessionInsightsDraftResult(StrictModel):
     secondary_variant: InsightVariant | None
     selection_note: str | None
     facts: list[InsightFact]
-    action_mentions: list[ActionMention]
+    action_candidates: list[RecordMoodCandidate]
     sections: list[InsightDraftSection]
     review_flags: list[InsightReviewFlag]
 

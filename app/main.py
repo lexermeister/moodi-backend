@@ -4,9 +4,17 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.api import health, recordings, session_insights, session_insights_review, transcriptions
+from app.api import (
+    actions,
+    health,
+    recordings,
+    session_insights,
+    session_insights_review,
+    transcriptions,
+)
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
+from app.services.actions import ActionService
 from app.services.recording_storage import RecordingStorage
 from app.services.session_insights import SessionInsightsService
 from app.services.session_insights_review import SessionInsightsReviewService
@@ -53,12 +61,17 @@ def create_app(
             directory=application_settings.recordings_path,
             transcript_store=transcript_store,
             generator=insights_generator,
-            prompt_path=Path(__file__).resolve().parent / "prompts" / "session_insights_v0_3.txt",
+            prompt_path=Path(__file__).resolve().parent / "prompts" / "session_insights_v0_4.txt",
         )
         application.state.session_insights_review_service = SessionInsightsReviewService(
             directory=application_settings.recordings_path,
             insights_service=application.state.session_insights_service,
         )
+        action_service = ActionService(
+            directory=application_settings.recordings_path,
+            insights_service=application.state.session_insights_service,
+        )
+        application.state.action_service = action_service
         logger.info(
             "application_started app_env=%s recordings_dir=%s max_upload_mb=%s "
             "transcription_model=%s role_attribution_model=%s insights_model=%s "
@@ -84,6 +97,7 @@ def create_app(
     application.include_router(transcriptions.router)
     application.include_router(session_insights.router)
     application.include_router(session_insights_review.router)
+    application.include_router(actions.router)
     return application
 
 

@@ -20,7 +20,7 @@ from app.schemas.session_insights import (
 )
 from app.services.transcript_store import TranscriptStore
 
-SESSION_INSIGHTS_PROMPT_VERSION = "v0.3"
+SESSION_INSIGHTS_PROMPT_VERSION = "v0.4.2"
 MAX_GENERATION_ATTEMPTS = 2
 logger = get_logger("services.session_insights")
 
@@ -239,12 +239,12 @@ class SessionInsightsService:
         self._save(completed)
         logger.info(
             "insights_completed recording_id=%s source_version=%s model=%s fact_count=%s "
-            "action_count=%s section_count=%s duration_ms=%s",
+            "candidate_count=%s section_count=%s duration_ms=%s",
             recording_id,
             source_version,
             self.generator.model,
             len(result.facts),
-            len(result.action_mentions),
+            len(result.action_candidates),
             len(result.sections),
             round((monotonic() - started_at) * 1000),
         )
@@ -298,17 +298,20 @@ class SessionInsightsService:
         if not isinstance(segments, list):
             raise InsightsValidationError("Input segments are invalid", reason="invalid_input")
         source_ids = {segment["id"] for segment in segments}
+        segments_by_id = {segment["id"]: segment["text"] for segment in segments}
 
         fact_ids = [fact.id for fact in result.facts]
-        action_ids = [action.id for action in result.action_mentions]
+        candidate_ids = [candidate.id for candidate in result.action_candidates]
         if len(fact_ids) != len(set(fact_ids)) or any(
             re.fullmatch(r"F\d+", identifier) is None for identifier in fact_ids
         ):
             raise InsightsValidationError("Fact IDs are invalid", reason="invalid_fact_ids")
-        if len(action_ids) != len(set(action_ids)) or any(
-            re.fullmatch(r"A\d+", identifier) is None for identifier in action_ids
+        if len(candidate_ids) != len(set(candidate_ids)) or any(
+            re.fullmatch(r"C\d+", identifier) is None for identifier in candidate_ids
         ):
-            raise InsightsValidationError("Action IDs are invalid", reason="invalid_action_ids")
+            raise InsightsValidationError(
+                "Candidate IDs are invalid", reason="invalid_candidate_ids"
+            )
 
         for fact in result.facts:
             if (
@@ -320,55 +323,31 @@ class SessionInsightsService:
                     "A fact has invalid evidence", reason="invalid_fact_evidence"
                 )
 
-        actions_by_id = {action.id: action for action in result.action_mentions}
-        for action in result.action_mentions:
+        for candidate in result.action_candidates:
             if (
-                not action.activity.strip()
-                or not action.source_excerpt.strip()
-                or not action.source_ids
-                or not set(action.source_ids) <= source_ids
+                not candidate.exact_task.strip()
+                or not candidate.source_excerpt.strip()
+                or not candidate.source_ids
+                or not set(candidate.source_ids) <= source_ids
             ):
                 raise InsightsValidationError(
-                    "An action has invalid evidence", reason="invalid_action_evidence"
+                    "A candidate has invalid evidence", reason="invalid_candidate_evidence"
                 )
-            if action.eligibility == "review_candidate" and (
-                action.status != "agreed" or action.actor != "client"
+            if not any(
+                candidate.source_excerpt in segments_by_id[source_id]
+                for source_id in candidate.source_ids
             ):
                 raise InsightsValidationError(
-                    "An ineligible action is marked for review",
-                    reason="invalid_review_candidate",
+                    "A candidate excerpt is not present in its cited evidence",
+                    reason="invalid_candidate_excerpt",
                 )
-            if action.status in {"suggested", "declined", "superseded"} and (
-                action.eligibility != "not_eligible"
-            ):
-                raise InsightsValidationError(
-                    "An action has invalid eligibility", reason="invalid_action_eligibility"
-                )
-            if action.replaces_action_id is not None:
-                replaced = actions_by_id.get(action.replaces_action_id)
-                if replaced is None or replaced.id == action.id or replaced.status != "superseded":
-                    raise InsightsValidationError(
-                        "An action replacement is invalid", reason="invalid_action_replacement"
-                    )
-
-        for action in result.action_mentions:
-            seen = {action.id}
-            current = action
-            while current.replaces_action_id is not None:
-                if current.replaces_action_id in seen:
-                    raise InsightsValidationError(
-                        "Action replacements contain a cycle",
-                        reason="cyclic_action_replacement",
-                    )
-                seen.add(current.replaces_action_id)
-                current = actions_by_id[current.replaces_action_id]
 
         section_keys = [section.key for section in result.sections]
         if len(section_keys) != len(set(section_keys)):
             raise InsightsValidationError(
                 "Section keys are duplicated", reason="duplicate_sections"
             )
-        known_actions = set(action_ids)
+        known_candidates = set(candidate_ids)
         for section in result.sections:
             if not section.heading.strip() or not section.bullets:
                 raise InsightsValidationError("A section is empty", reason="empty_section")
@@ -383,7 +362,7 @@ class SessionInsightsService:
             if (
                 not flag.detail.strip()
                 or not set(flag.source_ids) <= source_ids
-                or not set(flag.action_ids) <= known_actions
+                or not set(flag.candidate_ids) <= known_candidates
             ):
                 raise InsightsValidationError(
                     "A review flag has invalid references", reason="invalid_review_flag"
@@ -395,7 +374,7 @@ class SessionInsightsService:
                 or result.secondary_variant is not None
                 or result.selection_note is not None
                 or result.facts
-                or result.action_mentions
+                or result.action_candidates
                 or result.sections
             ):
                 raise InsightsValidationError(
@@ -417,6 +396,8 @@ class SessionInsightsService:
 
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("prompt_version") != SESSION_INSIGHTS_PROMPT_VERSION:
+                return None
             request_fingerprint = payload.pop("request_fingerprint")
             if "draft_id" not in payload:
                 legacy_result = SessionInsightsResult.model_validate(payload["result"])
