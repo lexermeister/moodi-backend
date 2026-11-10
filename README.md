@@ -32,6 +32,7 @@ worker, reminders, or clinical-record integration.
 - Structured role attribution that returns `client` and `therapist` turns or fails as ambiguous.
 - Atomic local transcript JSON storage.
 - `POST /recordings/{recording_id}/insights` for evidence-linked session insights.
+- `GET` and `PUT /recordings/{recording_id}/insights/review` for a separate client-reviewed layer.
 - Idempotent transcript and insight generation backed by versioned local artifacts.
 - Application-side validation of model-generated evidence and cross references.
 - Provider-error handling that does not expose OpenAI error details.
@@ -50,6 +51,7 @@ app/
     recordings.py          Recording upload endpoint
     transcriptions.py      Saved-recording transcription endpoint
     session_insights.py    Saved-transcript insight endpoint
+    session_insights_review.py  Reviewed-insight endpoints
   core/
     config.py              Environment-backed settings
     logging.py             Application logger setup
@@ -57,11 +59,13 @@ app/
     recordings.py          Recording response model
     transcriptions.py      Transcription response models
     session_insights.py    Structured insight request and response models
+    session_insights_review.py  Reviewed-insight request and response models
   services/
     recording_storage.py   Upload validation and filesystem storage
     transcript_store.py    Atomic completed-transcript persistence
     transcription.py       OpenAI transcription, role, and insight provider calls
     session_insights.py    Insight validation, caching, and persistence
+    session_insights_review.py  Reviewed-insight validation and persistence
   prompts/
     session_insights_v0_3.txt  Versioned insight-generation instructions
 tests/                     Automated tests
@@ -296,8 +300,9 @@ Content-Type: application/json
 ```
 
 The endpoint reads the server-side completed transcript, assigns stable segment IDs, calculates a
-source hash, and requests a structured insight result. It validates every fact, action, section,
-review flag, exact action excerpt, and cross reference before atomically saving
+source hash, and requests a structured insight result. It validates the structured facts, actions,
+sections, review flags, and transcript references before assigning an application-owned `draft_id`
+and stable bullet `item_id` values. The immutable draft is atomically saved as
 `<uuid>.insights.json`. Repeating the same request returns the cached artifact without another model
 call. A schema-valid `insufficient_source` result is returned as HTTP `200`.
 
@@ -309,6 +314,28 @@ Important insight error responses:
 | `409` | No completed transcript exists yet. |
 | `502` | Generation, evidence validation, or insight storage failed. |
 | `503` | `OPENAI_API_KEY` is not configured. |
+
+### Review and edit session insights
+
+```http
+GET /recordings/{recording_id}/insights/review
+PUT /recordings/{recording_id}/insights/review
+Content-Type: application/json
+
+{
+  "draft_id": "sha256:...",
+  "source_version": "sha256:...",
+  "items": [
+    {"item_id": "B1", "disposition": "edited", "displayed_text": "Updated wording"}
+  ]
+}
+```
+
+The review is a complete overlay on the immutable generated draft. Each generated bullet must be
+retained, edited, or removed. Edited text is stored as `client_edited` provenance and is not treated
+as transcript-backed wording. The reviewed layer is atomically saved as
+`<uuid>.insights-review.json`. A stale draft or source version returns `409` instead of silently
+applying edits to regenerated insights.
 
 ## Logging
 
@@ -519,9 +546,10 @@ The current test suite verifies:
 - OpenAI failures preserve the original recording and do not leave a transcript.
 - Missing OpenAI configuration returns a service-unavailable response.
 - Completed transcripts and matching insights are reused without repeated provider calls.
-- Insight facts and section references must resolve to real transcript segments and facts.
+- Insight fact, action, and review-flag source references must resolve to real transcript segments.
 - Invalid insight evidence gets one bounded regeneration attempt and is never persisted.
 - Insight provider failures do not expose provider details or leave partial artifacts.
+- Reviewed insights persist separately and never mutate the generated draft.
 
 Tests use a temporary recordings directory and do not write into the development storage folder.
 

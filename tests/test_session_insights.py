@@ -217,11 +217,13 @@ def test_insights_are_structured_saved_and_cached(
     assert first.json() == cached.json()
     payload = first.json()
     assert payload["recording_id"] == recording["id"]
+    assert payload["draft_id"].startswith("sha256:")
     assert payload["source_version"].startswith("sha256:")
     assert payload["prompt_version"] == "v0.3"
     assert payload["model"] == "gpt-6-luna"
     assert payload["result"]["status"] == "draft"
     assert payload["result"]["sections"][0]["heading"] == "Today's focus"
+    assert payload["result"]["sections"][0]["bullets"][0]["item_id"] == "B1"
     assert fake_openai.responses.insights_call_count == 1
 
     insight_calls = [

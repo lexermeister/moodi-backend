@@ -11,7 +11,13 @@ from typing import Protocol
 from uuid import UUID
 
 from app.core.logging import get_logger
-from app.schemas.session_insights import SessionInsightsResponse, SessionInsightsResult
+from app.schemas.session_insights import (
+    InsightDraftBullet,
+    InsightDraftSection,
+    SessionInsightsDraftResult,
+    SessionInsightsResponse,
+    SessionInsightsResult,
+)
 from app.services.transcript_store import TranscriptStore
 
 SESSION_INSIGHTS_PROMPT_VERSION = "v0.3"
@@ -72,9 +78,45 @@ class InsightsGenerator(Protocol):
     ) -> SessionInsightsResult: ...
 
 
+def _to_draft_result(result: SessionInsightsResult) -> SessionInsightsDraftResult:
+    item_number = 1
+    sections: list[InsightDraftSection] = []
+    for section in result.sections:
+        bullets: list[InsightDraftBullet] = []
+        for bullet in section.bullets:
+            bullets.append(
+                InsightDraftBullet(
+                    **bullet.model_dump(),
+                    item_id=f"B{item_number}",
+                )
+            )
+            item_number += 1
+        sections.append(
+            InsightDraftSection(
+                key=section.key,
+                heading=section.heading,
+                bullets=bullets,
+            )
+        )
+
+    return SessionInsightsDraftResult(
+        **result.model_dump(exclude={"sections"}),
+        sections=sections,
+    )
+
+
+def _to_generated_result(result: SessionInsightsDraftResult) -> SessionInsightsResult:
+    payload = result.model_dump()
+    for section in payload["sections"]:
+        for bullet in section["bullets"]:
+            bullet.pop("item_id")
+    return SessionInsightsResult.model_validate(payload)
+
+
 @dataclass(frozen=True)
 class CompletedSessionInsights:
     recording_id: UUID
+    draft_id: str
     source_version: str
     prompt_version: str
     model: str
@@ -85,11 +127,12 @@ class CompletedSessionInsights:
     def response(self) -> SessionInsightsResponse:
         return SessionInsightsResponse(
             recording_id=self.recording_id,
+            draft_id=self.draft_id,
             source_version=self.source_version,
             prompt_version=self.prompt_version,
             model=self.model,
             generated_at=self.generated_at,
-            result=self.result,
+            result=_to_draft_result(self.result),
         )
 
 
@@ -185,6 +228,7 @@ class SessionInsightsService:
 
         completed = CompletedSessionInsights(
             recording_id=recording_id,
+            draft_id=self._draft_id(request_fingerprint, result),
             source_version=source_version,
             prompt_version=SESSION_INSIGHTS_PROMPT_VERSION,
             model=self.generator.model,
@@ -224,6 +268,22 @@ class SessionInsightsService:
             sort_keys=True,
         )
         return hashlib.sha256(canonical.encode()).hexdigest()
+
+    @staticmethod
+    def _draft_id(request_fingerprint: str, result: SessionInsightsResult) -> str:
+        canonical = json.dumps(
+            {
+                "request_fingerprint": request_fingerprint,
+                "result": result.model_dump(mode="json"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+
+    def load_completed(self, recording_id: UUID) -> CompletedSessionInsights | None:
+        return self._load(recording_id)
 
     @staticmethod
     def _validate(result: SessionInsightsResult, input_data: dict[str, object]) -> None:
@@ -358,17 +418,25 @@ class SessionInsightsService:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             request_fingerprint = payload.pop("request_fingerprint")
+            if "draft_id" not in payload:
+                legacy_result = SessionInsightsResult.model_validate(payload["result"])
+                payload["draft_id"] = self._draft_id(request_fingerprint, legacy_result)
+                payload["result"] = _to_draft_result(legacy_result).model_dump(mode="json")
             response = SessionInsightsResponse.model_validate(payload)
             if response.recording_id != recording_id:
                 raise ValueError("Insights recording ID does not match its filename")
+            result = _to_generated_result(response.result)
+            if response.draft_id != self._draft_id(request_fingerprint, result):
+                raise ValueError("Insights draft ID does not match its contents")
             return CompletedSessionInsights(
                 recording_id=response.recording_id,
+                draft_id=response.draft_id,
                 source_version=response.source_version,
                 prompt_version=response.prompt_version,
                 model=response.model,
                 request_fingerprint=request_fingerprint,
                 generated_at=response.generated_at,
-                result=response.result,
+                result=result,
             )
         except Exception as error:
             raise InsightsStorageError("Failed to load session insights") from error

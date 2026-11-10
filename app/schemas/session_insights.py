@@ -5,6 +5,14 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 type InsightVariant = Literal["P01", "P02", "P03"]
+type InsightSectionKey = Literal[
+    "today_focus",
+    "key_takeaways",
+    "explored_practised",
+    "agreements",
+    "additional_topics",
+    "next_time",
+]
 
 
 class StrictModel(BaseModel):
@@ -65,14 +73,7 @@ class InsightBullet(StrictModel):
 
 
 class InsightSection(StrictModel):
-    key: Literal[
-        "today_focus",
-        "key_takeaways",
-        "explored_practised",
-        "agreements",
-        "additional_topics",
-        "next_time",
-    ]
+    key: InsightSectionKey
     heading: str
     bullets: list[InsightBullet]
 
@@ -106,10 +107,35 @@ class SessionInsightsResult(StrictModel):
     review_flags: list[InsightReviewFlag]
 
 
+class InsightDraftBullet(InsightBullet):
+    item_id: str
+
+
+class InsightDraftSection(StrictModel):
+    key: InsightSectionKey
+    heading: str
+    bullets: list[InsightDraftBullet]
+
+
+class SessionInsightsDraftResult(StrictModel):
+    session_id: str
+    source_version: str
+    status: Literal["draft", "insufficient_source"]
+    coverage_note: str | None
+    primary_variant: InsightVariant | None
+    secondary_variant: InsightVariant | None
+    selection_note: str | None
+    facts: list[InsightFact]
+    action_mentions: list[ActionMention]
+    sections: list[InsightDraftSection]
+    review_flags: list[InsightReviewFlag]
+
+
 class SessionInsightsResponse(StrictModel):
     recording_id: UUID
+    draft_id: str
     source_version: str
     prompt_version: str
     model: str
     generated_at: datetime
-    result: SessionInsightsResult
+    result: SessionInsightsDraftResult
