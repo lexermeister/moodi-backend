@@ -1,6 +1,7 @@
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, model_validator
 
@@ -14,19 +15,39 @@ class RecordMoodActionSettings(StrictModel):
     reference_period: str = Field(min_length=1, max_length=200)
     start_date: date | None = None
     end_date: date | None = None
-    duration_days: Literal[14] = 14
+    duration_kind: Literal["fixed", "ongoing"] = "fixed"
+    duration_days: int | None = Field(default=14, ge=1, le=365)
+    preferred_check_in_time: str | None = Field(
+        default=None,
+        pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$",
+    )
+    preferred_time_zone: str | None = Field(default=None, min_length=1, max_length=120)
+    schedule_origin: Literal["moodi_default", "user_selected"] = "moodi_default"
     configuration: RecordMoodConfiguration
 
     @model_validator(mode="after")
     def validate_date_range(self) -> "RecordMoodActionSettings":
+        if (self.preferred_check_in_time is None) != (self.preferred_time_zone is None):
+            raise ValueError("Preferred check-in time and timezone must be supplied together")
+        if self.preferred_time_zone is not None:
+            try:
+                ZoneInfo(self.preferred_time_zone)
+            except ZoneInfoNotFoundError as error:
+                raise ValueError("Preferred timezone must be a valid IANA timezone") from error
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("Action end date cannot precede its start date")
-        if (
-            self.start_date
-            and self.end_date
-            and (self.end_date - self.start_date).days + 1 != self.duration_days
-        ):
-            raise ValueError("Action date range must contain exactly 14 days")
+        if self.duration_kind == "ongoing":
+            if self.duration_days is not None or self.end_date is not None:
+                raise ValueError("Ongoing Actions cannot have a duration or end date")
+        else:
+            if self.duration_days is None:
+                raise ValueError("Fixed Actions require a duration")
+            if (
+                self.start_date
+                and self.end_date
+                and (self.end_date - self.start_date).days + 1 != self.duration_days
+            ):
+                raise ValueError("Action date range must match its duration")
         return self
 
 

@@ -105,11 +105,21 @@ class ActionService:
                     reason="missing_reviewed_settings",
                 )
             start_date = settings.start_date or reviewed_at.date()
+            if settings.duration_kind == "ongoing":
+                end_date = None
+            else:
+                if settings.duration_days is None:
+                    raise ActionValidationError(
+                        "Fixed Actions require a duration",
+                        reason="missing_duration",
+                    )
+                end_date = settings.end_date or start_date + timedelta(
+                    days=settings.duration_days - 1
+                )
             settings = settings.model_copy(
                 update={
                     "start_date": start_date,
-                    "end_date": settings.end_date
-                    or start_date + timedelta(days=settings.duration_days - 1),
+                    "end_date": end_date,
                 }
             )
             settings = RecordMoodActionSettings.model_validate(settings.model_dump())
@@ -334,10 +344,21 @@ class ActionService:
         candidate: RecordMoodCandidate,
         settings: RecordMoodActionSettings,
     ) -> None:
-        if candidate.state == "review_ready" and candidate.configuration != settings.configuration:
+        if candidate.state != "review_ready":
             raise ActionValidationError(
-                "Reviewed mood configuration does not match the session candidate",
-                reason="configuration_changed",
+                "Record mood candidate is not ready for review",
+                reason="candidate_not_reviewable",
+            )
+        if (
+            candidate.exact_task != settings.exact_task
+            or candidate.frequency != settings.frequency
+            or candidate.timing != settings.timing
+            or candidate.reference_period != settings.reference_period
+            or candidate.configuration != settings.configuration
+        ):
+            raise ActionValidationError(
+                "Only the Action schedule can be changed before activation",
+                reason="clinical_settings_changed",
             )
 
     @staticmethod

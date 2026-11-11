@@ -46,12 +46,18 @@ def activate_candidate(
     return response.json()
 
 
-def entry_values(*, mood_value: int = 0, context: str | None = None) -> dict[str, Any]:
+def entry_values(
+    *,
+    mood_value: int = 0,
+    context: str | None = None,
+    relevant_date: str = "2026-11-10",
+    entry_time: str = "2026-11-10T20:00:00+01:00",
+) -> dict[str, Any]:
     return {
-        "relevant_date": "2026-11-10",
-        "entry_time": "2026-11-10T20:00:00+01:00",
+        "relevant_date": relevant_date,
+        "entry_time": entry_time,
         "timezone_offset_minutes": 60,
-        "day_key": "2026-11-10",
+        "day_key": relevant_date,
         "mood_value": mood_value,
         "mood_label": None,
         "context": context,
@@ -74,9 +80,13 @@ def test_candidate_activation_is_reviewed_persisted_and_idempotent(
         assert first["action"]["settings"]["configuration"]["scale_origin"] == "moodi_default"
         assert first["action"]["settings"]["frequency"] == "once daily"
         assert first["action"]["settings"]["timing"] == "evening"
+        assert first["action"]["settings"]["duration_kind"] == "fixed"
         assert first["action"]["settings"]["duration_days"] == 14
         assert first["action"]["settings"]["start_date"] == "2026-11-10"
         assert first["action"]["settings"]["end_date"] == "2026-11-23"
+        assert first["action"]["settings"]["preferred_check_in_time"] is None
+        assert first["action"]["settings"]["preferred_time_zone"] is None
+        assert first["action"]["settings"]["schedule_origin"] == "moodi_default"
 
         listed = client.get("/actions", params={"recording_id": recording["id"]})
         assert listed.status_code == 200
@@ -84,6 +94,119 @@ def test_candidate_activation_is_reviewed_persisted_and_idempotent(
 
     action_files = list((recordings_dir / "actions" / "records").glob("*.json"))
     assert len(action_files) == 1
+
+
+def test_candidate_activation_accepts_user_selected_fixed_schedule(
+    recordings_dir: Path,
+) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording, insights = generate_candidate(client)
+        candidate = insights["result"]["action_candidates"][0]
+        settings = reviewed_settings(candidate)
+        settings.update(
+            {
+                "duration_kind": "fixed",
+                "duration_days": 30,
+                "end_date": "2026-12-09",
+                "preferred_check_in_time": "20:30",
+                "preferred_time_zone": "Europe/Belgrade",
+                "schedule_origin": "user_selected",
+            }
+        )
+
+        response = client.put(
+            f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review",
+            json={
+                "draft_id": insights["draft_id"],
+                "source_version": insights["source_version"],
+                "disposition": "activate",
+                "settings": settings,
+            },
+        )
+
+        assert response.status_code == 200
+        activated = response.json()["action"]["settings"]
+        assert activated["duration_kind"] == "fixed"
+        assert activated["duration_days"] == 30
+        assert activated["end_date"] == "2026-12-09"
+        assert activated["preferred_check_in_time"] == "20:30"
+        assert activated["preferred_time_zone"] == "Europe/Belgrade"
+        assert activated["schedule_origin"] == "user_selected"
+
+
+def test_candidate_activation_accepts_ongoing_schedule(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording, insights = generate_candidate(client)
+        candidate = insights["result"]["action_candidates"][0]
+        settings = reviewed_settings(candidate)
+        settings.update(
+            {
+                "duration_kind": "ongoing",
+                "duration_days": None,
+                "end_date": None,
+                "preferred_check_in_time": "19:45",
+                "preferred_time_zone": "Europe/Belgrade",
+                "schedule_origin": "user_selected",
+            }
+        )
+
+        response = client.put(
+            f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review",
+            json={
+                "draft_id": insights["draft_id"],
+                "source_version": insights["source_version"],
+                "disposition": "activate",
+                "settings": settings,
+            },
+        )
+
+        assert response.status_code == 200
+        activated = response.json()["action"]["settings"]
+        assert activated["duration_kind"] == "ongoing"
+        assert activated["duration_days"] is None
+        assert activated["end_date"] is None
+
+        action_id = response.json()["action"]["id"]
+        entry_id = "58ab0b60-afcf-40ac-9734-c7390cf8f15f"
+        confirmed = client.post(
+            f"/actions/{action_id}/entries/{entry_id}/confirm",
+            json={
+                "values": entry_values(
+                    mood_value=8,
+                    relevant_date="2027-05-01",
+                    entry_time="2027-05-01T20:00:00+01:00",
+                ),
+                "expected_revision": None,
+                "idempotency_key": "ongoing-entry",
+            },
+        )
+        assert confirmed.status_code == 200
+
+
+def test_candidate_activation_rejects_clinical_setting_edits(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording, insights = generate_candidate(client)
+        candidate = insights["result"]["action_candidates"][0]
+        settings = reviewed_settings(candidate)
+        settings["exact_task"] = "Track something else"
+
+        response = client.put(
+            f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review",
+            json={
+                "draft_id": insights["draft_id"],
+                "source_version": insights["source_version"],
+                "disposition": "activate",
+                "settings": settings,
+            },
+        )
+
+        assert response.status_code == 422
+        assert (
+            response.json()["detail"] == "Only the Action schedule can be changed before activation"
+        )
 
 
 def test_rejected_candidate_creates_no_action(recordings_dir: Path) -> None:

@@ -337,6 +337,23 @@ as transcript-backed wording. The reviewed layer is atomically saved as
 `<uuid>.insights-review.json`. A stale draft or source version returns `409` instead of silently
 applying edits to regenerated insights.
 
+### Review and activate Record mood Actions
+
+```http
+PUT /recordings/{recording_id}/action-candidates/{candidate_id}/review
+```
+
+An activation request carries the reviewed Action settings. The task, cadence, reference period,
+and mood configuration must still match the generated candidate, while the patient may choose an
+exact local check-in time and timezone plus either a fixed 1–365 day duration or an `ongoing`
+schedule with no end date. The exact time is a stored logistical preference; this service does not
+schedule notifications. Fixed schedules receive an inclusive end date, while ongoing Actions stay
+active until a later explicit state change.
+
+Record mood entries support draft, confirmation, correction history, deletion, and selected-entry
+export under `/actions/{action_id}/entries`. Entries before the Action start date, or after a fixed
+Action's end date, are rejected.
+
 ## Logging
 
 Application logs are written to the backend process's standard error stream, next to Uvicorn's
