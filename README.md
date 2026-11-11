@@ -33,6 +33,8 @@ worker, reminders, or clinical-record integration.
 - Atomic local transcript JSON storage.
 - `POST /recordings/{recording_id}/insights` for evidence-linked session insights.
 - `GET` and `PUT /recordings/{recording_id}/insights/review` for a separate client-reviewed layer.
+- Reviewable Record mood Actions with dated drafts, confirmed entries, history, export, and
+  permanent cascade deletion.
 - Idempotent transcript and insight generation backed by versioned local artifacts.
 - Application-side validation of model-generated evidence and cross references.
 - Provider-error handling that does not expose OpenAI error details.
@@ -131,7 +133,12 @@ uv run uvicorn app.main:app --reload
 The API is available at `http://127.0.0.1:8000`.
 
 - Health check: `http://127.0.0.1:8000/health`
-- Interactive API documentation: `http://127.0.0.1:8000/docs`
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- ReDoc: `http://127.0.0.1:8000/redoc`
+- OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
+
+Swagger UI includes a **Try it out** control for API requests. This milestone has no authentication,
+so use only local or disposable test data when invoking destructive endpoints from the browser.
 
 Stop the server with `Ctrl+C`.
 
@@ -353,6 +360,43 @@ active until a later explicit state change.
 Record mood entries support draft, confirmation, correction history, deletion, and selected-entry
 export under `/actions/{action_id}/entries`. Entries before the Action start date, or after a fixed
 Action's end date, are rejected.
+
+### Permanently delete a Record mood Action
+
+```http
+DELETE /actions/{action_id}
+```
+
+A successful deletion returns HTTP `204` with no response body. It permanently removes:
+
+- the Action record;
+- every confirmed mood entry and saved draft belonging to that Action;
+- the entries' stored revision history; and
+- the candidate-review record that activated the Action.
+
+The source recording, transcript, generated Session Insights, and agreed-action candidate are not
+deleted. Removing the candidate review makes the item appear as **Needs setup** when the source
+session is opened again, and the user can explicitly activate a fresh Action with empty history.
+Files previously exported or shared outside the backend cannot be recalled by this endpoint.
+
+The filesystem operation stages the review, entry directory, and Action record before final
+removal. If staging fails, moved data is rolled back and the endpoint does not report success.
+Interrupted staged deletions are recovered the next time Action data is accessed.
+
+Example:
+
+```bash
+curl -i -X DELETE \
+  http://127.0.0.1:8000/actions/2d063c5f-86a1-42a7-8fa4-f51d17594fcc
+```
+
+Important error responses:
+
+| Status | Meaning |
+| --- | --- |
+| `404` | The Action does not exist. A client retry may treat this as already deleted. |
+| `409` | The stored candidate review does not match the Action, so nothing is removed. |
+| `502` | The filesystem deletion could not be staged or finalized safely. |
 
 ## Logging
 

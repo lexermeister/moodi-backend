@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -52,12 +53,15 @@ class ActionService:
         self.actions_directory = self.root / "records"
         self.reviews_directory = self.root / "reviews"
         self.entries_directory = self.root / "entries"
+        self.deletions_directory = self.root / ".deleting"
         self.insights_service = insights_service
 
     def prepare(self) -> None:
         self.actions_directory.mkdir(parents=True, exist_ok=True)
         self.reviews_directory.mkdir(parents=True, exist_ok=True)
         self.entries_directory.mkdir(parents=True, exist_ok=True)
+        self.deletions_directory.mkdir(parents=True, exist_ok=True)
+        self._recover_pending_deletions()
 
     def review_candidate(
         self,
@@ -172,6 +176,7 @@ class ActionService:
     def load_candidate_review(
         self, recording_id: UUID, candidate_id: str
     ) -> MoodCandidateReviewResponse:
+        self._recover_pending_deletions()
         review = self._load_review(recording_id, candidate_id)
         if review is None:
             raise ActionNotFoundError("Action candidate review was not found")
@@ -181,6 +186,7 @@ class ActionService:
         return review
 
     def list_actions(self, recording_id: UUID | None = None) -> list[MoodAction]:
+        self._recover_pending_deletions()
         actions: list[MoodAction] = []
         if not self.actions_directory.is_dir():
             return actions
@@ -195,10 +201,63 @@ class ActionService:
         return sorted(actions, key=lambda item: item.created_at, reverse=True)
 
     def load_action(self, action_id: UUID) -> MoodAction:
+        self._recover_pending_deletions()
         action = self._load_action_if_present(action_id)
         if action is None:
             raise ActionNotFoundError("Mood Action was not found")
         return action
+
+    def delete_action(self, action_id: UUID) -> tuple[MoodAction, int]:
+        self.prepare()
+        action = self.load_action(action_id)
+        action_path = self._action_path(action_id)
+        review_path = self._review_path(action.recording_id, action.candidate_id)
+        entries_path = self._entry_directory(action_id)
+        deletion_path = self._deletion_path(action_id)
+
+        if review_path.is_file():
+            review = self._load_model(
+                review_path,
+                MoodCandidateReviewResponse,
+                "Failed to load Action review",
+            )
+            if review.action is None or review.action.id != action_id:
+                raise ActionConflictError("Action review no longer matches this Action")
+
+        try:
+            entry_count = (
+                sum(1 for path in entries_path.glob("*.json") if path.is_file())
+                if entries_path.is_dir()
+                else 0
+            )
+            deletion_path.mkdir(parents=True, exist_ok=False)
+        except OSError as error:
+            raise ActionStorageError("Failed to prepare Action deletion") from error
+
+        moves = [
+            (review_path, deletion_path / "reviews" / review_path.name),
+            (entries_path, deletion_path / "entries" / entries_path.name),
+            (action_path, deletion_path / "records" / action_path.name),
+        ]
+        moved: list[tuple[Path, Path]] = []
+        try:
+            for source, destination in moves:
+                if not source.exists():
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(destination)
+                moved.append((source, destination))
+        except OSError as error:
+            rollback_error = self._rollback_staged_deletion(moved, deletion_path)
+            raise ActionStorageError("Failed to stage Action deletion") from (
+                rollback_error or error
+            )
+
+        try:
+            shutil.rmtree(deletion_path)
+        except OSError as error:
+            raise ActionStorageError("Failed to finalize Action deletion") from error
+        return action, entry_count
 
     def save_draft(
         self,
@@ -509,6 +568,69 @@ class ActionService:
 
     def _entry_path(self, action_id: UUID, entry_id: UUID) -> Path:
         return self._entry_directory(action_id) / f"{entry_id}.json"
+
+    def _deletion_path(self, action_id: UUID) -> Path:
+        return self.deletions_directory / str(action_id)
+
+    def _recover_pending_deletions(self) -> None:
+        if not self.deletions_directory.is_dir():
+            return
+        try:
+            paths = list(self.deletions_directory.iterdir())
+        except OSError as error:
+            raise ActionStorageError("Failed to inspect pending Action deletions") from error
+        for path in paths:
+            if not path.is_dir():
+                continue
+            try:
+                action_id = UUID(path.name)
+            except ValueError:
+                continue
+            if self._action_path(action_id).is_file():
+                self._restore_staged_deletion(path)
+            else:
+                try:
+                    shutil.rmtree(path)
+                except OSError as error:
+                    raise ActionStorageError("Failed to finalize Action deletion") from error
+
+    def _restore_staged_deletion(self, deletion_path: Path) -> None:
+        destinations = {
+            "records": self.actions_directory,
+            "reviews": self.reviews_directory,
+            "entries": self.entries_directory,
+        }
+        try:
+            for group, destination_directory in destinations.items():
+                staged_directory = deletion_path / group
+                if not staged_directory.is_dir():
+                    continue
+                for staged in staged_directory.iterdir():
+                    destination = destination_directory / staged.name
+                    if destination.exists():
+                        raise OSError(f"Cannot restore staged Action data: {destination}")
+                    staged.replace(destination)
+            shutil.rmtree(deletion_path)
+        except OSError as error:
+            raise ActionStorageError("Failed to recover Action deletion") from error
+
+    @staticmethod
+    def _rollback_staged_deletion(
+        moved: list[tuple[Path, Path]], deletion_path: Path
+    ) -> OSError | None:
+        rollback_error: OSError | None = None
+        for source, staged in reversed(moved):
+            try:
+                if staged.exists():
+                    staged.replace(source)
+            except OSError as error:
+                rollback_error = rollback_error or error
+        if rollback_error is None:
+            try:
+                shutil.rmtree(deletion_path)
+            except OSError as error:
+                rollback_error = error
+        return rollback_error
 
     @staticmethod
     def _atomic_write(destination: Path, payload: dict[str, object]) -> None:

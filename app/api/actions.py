@@ -137,6 +137,39 @@ def get_mood_action(action_id: UUID, request: Request) -> MoodAction:
         _raise_action_error(error, event="action_load_failed")
 
 
+@router.delete(
+    "/actions/{action_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Permanently delete a mood Action",
+    description=(
+        "Deletes the Action, all of its mood entries and drafts, their revision history, "
+        "and the candidate review that activated it. The source recording, transcript, and "
+        "session insights are preserved, so the candidate can be reviewed and activated again."
+    ),
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": "The Action does not exist."},
+        status.HTTP_409_CONFLICT: {
+            "description": "The stored candidate review no longer matches the Action."
+        },
+        status.HTTP_502_BAD_GATEWAY: {
+            "description": "The Action data could not be deleted safely."
+        },
+    },
+)
+def delete_mood_action(action_id: UUID, request: Request) -> Response:
+    try:
+        action, entry_count = get_action_service(request).delete_action(action_id)
+    except (ActionNotFoundError, ActionConflictError, ActionStorageError) as error:
+        _raise_action_error(error, event="action_delete_failed")
+    logger.info(
+        "action_deleted action_id=%s recording_id=%s entry_count=%s",
+        action_id,
+        action.recording_id,
+        entry_count,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.put("/actions/{action_id}/entries/{entry_id}/draft", response_model=MoodEntry)
 def save_mood_entry_draft(
     action_id: UUID,

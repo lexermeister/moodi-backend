@@ -289,6 +289,121 @@ def test_mood_entry_draft_confirm_amend_export_and_delete(recordings_dir: Path) 
         assert client.get(f"/actions/{action_id}/entries").json() == {"entries": []}
 
 
+def test_delete_action_removes_entries_and_review_and_can_be_set_up_again(
+    recordings_dir: Path,
+) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    draft_entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
+    confirmed_entry_id = "58ab0b60-afcf-40ac-9734-c7390cf8f15f"
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording, insights = generate_candidate(client)
+        candidate = insights["result"]["action_candidates"][0]
+        action = activate_candidate(client, recording, insights)["action"]
+        action_id = action["id"]
+
+        draft = client.put(
+            f"/actions/{action_id}/entries/{draft_entry_id}/draft",
+            json={"values": entry_values(mood_value=4), "expected_revision": None},
+        )
+        confirmed = client.post(
+            f"/actions/{action_id}/entries/{confirmed_entry_id}/confirm",
+            json={
+                "values": entry_values(mood_value=7),
+                "expected_revision": None,
+                "idempotency_key": "delete-action-confirmed-entry",
+            },
+        )
+        assert draft.status_code == confirmed.status_code == 200
+
+        deleted = client.delete(f"/actions/{action_id}")
+
+        assert deleted.status_code == 204
+        assert client.get(f"/actions/{action_id}").status_code == 404
+        assert client.get(f"/actions/{action_id}/entries").status_code == 404
+        assert client.get("/actions").json() == {"actions": []}
+        review = client.get(
+            f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review"
+        )
+        assert review.status_code == 404
+
+        reactivated = activate_candidate(client, recording, insights)
+        assert reactivated["action"]["id"] == action_id
+        assert client.get(f"/actions/{action_id}/entries").json() == {"entries": []}
+
+    assert not (recordings_dir / "actions" / "entries" / action_id).exists()
+    assert not list((recordings_dir / "actions" / ".deleting").iterdir())
+
+
+def test_delete_action_keeps_other_actions_and_entries(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        first_recording, first_insights = generate_candidate(client)
+        first_action = activate_candidate(client, first_recording, first_insights)["action"]
+        second_recording, second_insights = generate_candidate(client)
+        second_action = activate_candidate(client, second_recording, second_insights)["action"]
+        second_entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
+        saved = client.put(
+            f"/actions/{second_action['id']}/entries/{second_entry_id}/draft",
+            json={"values": entry_values(mood_value=5), "expected_revision": None},
+        )
+        assert saved.status_code == 200
+
+        deleted = client.delete(f"/actions/{first_action['id']}")
+
+        assert deleted.status_code == 204
+        assert client.get(f"/actions/{second_action['id']}").json() == second_action
+        assert client.get(f"/actions/{second_action['id']}/entries").json() == {
+            "entries": [saved.json()]
+        }
+
+
+def test_delete_action_returns_not_found_for_unknown_action(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        response = client.delete("/actions/2d063c5f-86a1-42a7-8fa4-f51d17594fcc")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Mood Action was not found"}
+
+
+def test_delete_action_rolls_back_if_staging_fails(
+    recordings_dir: Path,
+    monkeypatch,
+) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording, insights = generate_candidate(client)
+        candidate = insights["result"]["action_candidates"][0]
+        action = activate_candidate(client, recording, insights)["action"]
+        action_id = action["id"]
+        entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
+        saved = client.put(
+            f"/actions/{action_id}/entries/{entry_id}/draft",
+            json={"values": entry_values(mood_value=5), "expected_revision": None},
+        )
+        assert saved.status_code == 200
+
+        action_path = recordings_dir / "actions" / "records" / f"{action_id}.json"
+        original_replace = Path.replace
+
+        def fail_action_move(path: Path, target: Path) -> Path:
+            if path == action_path:
+                raise OSError("simulated Action move failure")
+            return original_replace(path, target)
+
+        monkeypatch.setattr(Path, "replace", fail_action_move)
+        response = client.delete(f"/actions/{action_id}")
+
+        assert response.status_code == 502
+        assert client.get(f"/actions/{action_id}").json() == action
+        assert client.get(f"/actions/{action_id}/entries").json() == {"entries": [saved.json()]}
+        review = client.get(
+            f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review"
+        )
+        assert review.status_code == 200
+        assert not list((recordings_dir / "actions" / ".deleting").iterdir())
+
+
 def test_action_configuration_rejects_unassigned_context(recordings_dir: Path) -> None:
     fake_openai = FakeOpenAIClient(record_mood_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
