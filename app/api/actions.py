@@ -10,6 +10,7 @@ from app.schemas.actions import (
     ConfirmMoodEntryRequest,
     MoodAction,
     MoodActionListResponse,
+    MoodCandidateResolutionResponse,
     MoodCandidateReviewRequest,
     MoodCandidateReviewResponse,
     MoodEntry,
@@ -115,6 +116,30 @@ def get_record_mood_candidate_review(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (ActionNotFoundError, ActionConflictError, ActionStorageError) as error:
         _raise_action_error(error, event="action_candidate_review_load_failed")
+
+
+@router.get(
+    "/recordings/{recording_id}/action-candidates/{candidate_id}/resolution",
+    response_model=MoodCandidateResolutionResponse,
+    summary="Resolve a Record mood candidate against current Actions",
+    description=(
+        "Reports whether the candidate needs setup, has already been reviewed, or can use an "
+        "existing active ongoing Record mood Action. An incompatible ongoing Action is returned "
+        "as a conflict resolution and is never changed by this operation."
+    ),
+)
+def resolve_record_mood_candidate(
+    recording_id: UUID,
+    candidate_id: str,
+    request: Request,
+) -> MoodCandidateResolutionResponse:
+    try:
+        get_recording_storage(request).find(recording_id)
+        return get_action_service(request).resolve_candidate(recording_id, candidate_id)
+    except RecordingNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (ActionNotFoundError, ActionConflictError, ActionStorageError) as error:
+        _raise_action_error(error, event="action_candidate_resolution_failed")
 
 
 @router.get("/actions", response_model=MoodActionListResponse)

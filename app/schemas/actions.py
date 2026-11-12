@@ -85,9 +85,26 @@ class MoodCandidateReviewResponse(StrictModel):
     candidate_id: str
     draft_id: str
     source_version: str
-    disposition: Literal["activated", "rejected"]
+    disposition: Literal["activated", "linked_existing", "rejected"]
     reviewed_at: datetime
     action: MoodAction | None
+
+
+class MoodCandidateResolutionResponse(StrictModel):
+    recording_id: UUID
+    candidate_id: str
+    draft_id: str
+    source_version: str
+    status: Literal[
+        "needs_setup",
+        "already_active",
+        "activated",
+        "linked_existing",
+        "rejected",
+        "conflict",
+    ]
+    action: MoodAction | None
+    reason: Literal["incompatible_ongoing_action"] | None = None
 
 
 class MoodEntryValues(StrictModel):

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,36 @@ def activate_candidate(
             "source_version": insights["source_version"],
             "disposition": "activate",
             "settings": reviewed_settings(candidate),
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def activate_ongoing_candidate(
+    client: TestClient,
+    recording: dict[str, Any],
+    insights: dict[str, Any],
+) -> dict[str, Any]:
+    candidate = insights["result"]["action_candidates"][0]
+    settings = reviewed_settings(candidate)
+    settings.update(
+        {
+            "duration_kind": "ongoing",
+            "duration_days": None,
+            "end_date": None,
+            "preferred_check_in_time": "20:00",
+            "preferred_time_zone": "Europe/Belgrade",
+            "schedule_origin": "user_selected",
+        }
+    )
+    response = client.put(
+        f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review",
+        json={
+            "draft_id": insights["draft_id"],
+            "source_version": insights["source_version"],
+            "disposition": "activate",
+            "settings": settings,
         },
     )
     assert response.status_code == 200
@@ -183,6 +214,117 @@ def test_candidate_activation_accepts_ongoing_schedule(recordings_dir: Path) -> 
             },
         )
         assert confirmed.status_code == 200
+
+
+def test_candidate_reuses_compatible_active_ongoing_action(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        first_recording, first_insights = generate_candidate(client)
+        first_candidate = first_insights["result"]["action_candidates"][0]
+        first_review = activate_ongoing_candidate(client, first_recording, first_insights)
+        action = first_review["action"]
+        entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
+        saved_entry = client.put(
+            f"/actions/{action['id']}/entries/{entry_id}/draft",
+            json={"values": entry_values(mood_value=6), "expected_revision": None},
+        )
+        assert saved_entry.status_code == 200
+
+        second_recording, second_insights = generate_candidate(client)
+        second_candidate = second_insights["result"]["action_candidates"][0]
+        resolution_url = (
+            f"/recordings/{second_recording['id']}/action-candidates/"
+            f"{second_candidate['id']}/resolution"
+        )
+        resolution = client.get(resolution_url)
+
+        assert resolution.status_code == 200
+        assert resolution.json()["status"] == "already_active"
+        assert resolution.json()["action"] == action
+
+        linked = activate_candidate(client, second_recording, second_insights)
+        retried = activate_candidate(client, second_recording, second_insights)
+
+        assert linked == retried
+        assert linked["disposition"] == "linked_existing"
+        assert linked["action"] == action
+        assert client.get("/actions").json() == {"actions": [action]}
+        assert client.get(f"/actions/{action['id']}/entries").json() == {
+            "entries": [saved_entry.json()]
+        }
+        assert client.get(resolution_url).json()["status"] == "linked_existing"
+
+        deleted = client.delete(f"/actions/{action['id']}")
+
+        assert deleted.status_code == 204
+        for recording, candidate in (
+            (first_recording, first_candidate),
+            (second_recording, second_candidate),
+        ):
+            review_url = f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review"
+            candidate_resolution_url = (
+                f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/resolution"
+            )
+            assert client.get(review_url).status_code == 404
+            assert client.get(candidate_resolution_url).json()["status"] == "needs_setup"
+
+
+def test_fixed_action_does_not_block_another_action(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        first_recording, first_insights = generate_candidate(client)
+        first_action = activate_candidate(client, first_recording, first_insights)["action"]
+        second_recording, second_insights = generate_candidate(client)
+        second_candidate = second_insights["result"]["action_candidates"][0]
+
+        resolution = client.get(
+            f"/recordings/{second_recording['id']}/action-candidates/"
+            f"{second_candidate['id']}/resolution"
+        )
+        second_action = activate_candidate(client, second_recording, second_insights)["action"]
+
+        assert resolution.status_code == 200
+        assert resolution.json()["status"] == "needs_setup"
+        assert second_action["id"] != first_action["id"]
+        assert len(client.get("/actions").json()["actions"]) == 2
+
+
+def test_incompatible_ongoing_action_blocks_activation(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        first_recording, first_insights = generate_candidate(client)
+        action = activate_ongoing_candidate(client, first_recording, first_insights)["action"]
+        action_path = recordings_dir / "actions" / "records" / f"{action['id']}.json"
+        stored_action = json.loads(action_path.read_text(encoding="utf-8"))
+        stored_action["settings"]["timing"] = "morning"
+        action_path.write_text(json.dumps(stored_action), encoding="utf-8")
+
+        second_recording, second_insights = generate_candidate(client)
+        second_candidate = second_insights["result"]["action_candidates"][0]
+        resolution = client.get(
+            f"/recordings/{second_recording['id']}/action-candidates/"
+            f"{second_candidate['id']}/resolution"
+        )
+        activation = client.put(
+            f"/recordings/{second_recording['id']}/action-candidates/"
+            f"{second_candidate['id']}/review",
+            json={
+                "draft_id": second_insights["draft_id"],
+                "source_version": second_insights["source_version"],
+                "disposition": "activate",
+                "settings": reviewed_settings(second_candidate),
+            },
+        )
+
+        assert resolution.status_code == 200
+        assert resolution.json()["status"] == "conflict"
+        assert resolution.json()["reason"] == "incompatible_ongoing_action"
+        assert resolution.json()["action"]["id"] == action["id"]
+        assert activation.status_code == 409
+        assert activation.json() == {
+            "detail": "An active ongoing mood Action already has different settings"
+        }
+        assert len(client.get("/actions").json()["actions"]) == 1
 
 
 def test_candidate_activation_rejects_clinical_setting_edits(recordings_dir: Path) -> None:

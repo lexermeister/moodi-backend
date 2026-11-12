@@ -5,12 +5,14 @@ import shutil
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from threading import RLock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.schemas.actions import (
     AmendMoodEntryRequest,
     ConfirmMoodEntryRequest,
     MoodAction,
+    MoodCandidateResolutionResponse,
     MoodCandidateReviewRequest,
     MoodCandidateReviewResponse,
     MoodEntry,
@@ -55,6 +57,7 @@ class ActionService:
         self.entries_directory = self.root / "entries"
         self.deletions_directory = self.root / ".deleting"
         self.insights_service = insights_service
+        self._mutation_lock = RLock()
 
     def prepare(self) -> None:
         self.actions_directory.mkdir(parents=True, exist_ok=True)
@@ -64,6 +67,15 @@ class ActionService:
         self._recover_pending_deletions()
 
     def review_candidate(
+        self,
+        recording_id: UUID,
+        candidate_id: str,
+        request: MoodCandidateReviewRequest,
+    ) -> MoodCandidateReviewResponse:
+        with self._mutation_lock:
+            return self._review_candidate(recording_id, candidate_id, request)
+
+    def _review_candidate(
         self,
         recording_id: UUID,
         candidate_id: str,
@@ -94,13 +106,18 @@ class ActionService:
                 raise ActionConflictError(
                     "The candidate was already reviewed from a different insights draft"
                 )
-            requested_disposition = "activated" if request.disposition == "activate" else "rejected"
-            if existing.disposition != requested_disposition:
+            requested_dispositions = (
+                {"activated", "linked_existing"}
+                if request.disposition == "activate"
+                else {"rejected"}
+            )
+            if existing.disposition not in requested_dispositions:
                 raise ActionConflictError("The candidate has already been reviewed")
             return existing
 
         reviewed_at = datetime.now(UTC)
         action: MoodAction | None = None
+        review_disposition = "rejected"
         if request.disposition == "activate":
             settings = request.settings
             if settings is None:
@@ -128,42 +145,52 @@ class ActionService:
             )
             settings = RecordMoodActionSettings.model_validate(settings.model_dump())
             self._validate_reviewed_settings(candidate, settings)
-            action_id = uuid5(
-                NAMESPACE_URL,
-                f"moodi:{recording_id}:{draft.source_version}:{candidate_id}",
-            )
-            action = MoodAction(
-                id=action_id,
-                type="record_mood",
-                state="active",
-                recording_id=recording_id,
-                transcript_version=draft.source_version,
-                candidate_id=candidate_id,
-                source_ids=candidate.source_ids,
-                source_excerpt=candidate.source_excerpt,
-                settings=settings,
-                created_at=reviewed_at,
-                revision=1,
-            )
-            existing_action = self._load_action_if_present(action.id)
-            if existing_action is None:
-                self._atomic_write(self._action_path(action.id), action.model_dump(mode="json"))
-            elif (
-                existing_action.recording_id != recording_id
-                or existing_action.transcript_version != draft.source_version
-                or existing_action.candidate_id != candidate_id
-                or existing_action.settings != settings
-            ):
-                raise ActionConflictError("A different Action already uses this candidate")
+            ongoing_action = self._find_active_ongoing_action()
+            if ongoing_action is not None:
+                if not self._candidate_matches_action(candidate, ongoing_action):
+                    raise ActionConflictError(
+                        "An active ongoing mood Action already has different settings"
+                    )
+                action = ongoing_action
+                review_disposition = "linked_existing"
             else:
-                action = existing_action
+                action_id = uuid5(
+                    NAMESPACE_URL,
+                    f"moodi:{recording_id}:{draft.source_version}:{candidate_id}",
+                )
+                action = MoodAction(
+                    id=action_id,
+                    type="record_mood",
+                    state="active",
+                    recording_id=recording_id,
+                    transcript_version=draft.source_version,
+                    candidate_id=candidate_id,
+                    source_ids=candidate.source_ids,
+                    source_excerpt=candidate.source_excerpt,
+                    settings=settings,
+                    created_at=reviewed_at,
+                    revision=1,
+                )
+                existing_action = self._load_action_if_present(action.id)
+                if existing_action is None:
+                    self._atomic_write(self._action_path(action.id), action.model_dump(mode="json"))
+                elif (
+                    existing_action.recording_id != recording_id
+                    or existing_action.transcript_version != draft.source_version
+                    or existing_action.candidate_id != candidate_id
+                    or existing_action.settings != settings
+                ):
+                    raise ActionConflictError("A different Action already uses this candidate")
+                else:
+                    action = existing_action
+                review_disposition = "activated"
 
         review = MoodCandidateReviewResponse(
             recording_id=recording_id,
             candidate_id=candidate_id,
             draft_id=draft.draft_id,
             source_version=draft.source_version,
-            disposition="activated" if action is not None else "rejected",
+            disposition=review_disposition,
             reviewed_at=reviewed_at,
             action=action,
         )
@@ -172,6 +199,60 @@ class ActionService:
             review.model_dump(mode="json"),
         )
         return review
+
+    def resolve_candidate(
+        self, recording_id: UUID, candidate_id: str
+    ) -> MoodCandidateResolutionResponse:
+        with self._mutation_lock:
+            self.prepare()
+            if re.fullmatch(r"C\d+", candidate_id) is None:
+                raise ActionNotFoundError("Record mood candidate was not found")
+            draft = self._load_current_draft(recording_id)
+            candidate = next(
+                (item for item in draft.result.action_candidates if item.id == candidate_id),
+                None,
+            )
+            if candidate is None:
+                raise ActionNotFoundError("Record mood candidate was not found")
+
+            review = self._load_review(recording_id, candidate_id)
+            if review is not None:
+                if (
+                    review.draft_id != draft.draft_id
+                    or review.source_version != draft.source_version
+                ):
+                    raise ActionConflictError(
+                        "Session insights changed; review the latest candidate"
+                    )
+                return MoodCandidateResolutionResponse(
+                    recording_id=recording_id,
+                    candidate_id=candidate_id,
+                    draft_id=draft.draft_id,
+                    source_version=draft.source_version,
+                    status=review.disposition,
+                    action=review.action,
+                )
+
+            ongoing_action = self._find_active_ongoing_action()
+            if ongoing_action is None:
+                return MoodCandidateResolutionResponse(
+                    recording_id=recording_id,
+                    candidate_id=candidate_id,
+                    draft_id=draft.draft_id,
+                    source_version=draft.source_version,
+                    status="needs_setup",
+                    action=None,
+                )
+            compatible = self._candidate_matches_action(candidate, ongoing_action)
+            return MoodCandidateResolutionResponse(
+                recording_id=recording_id,
+                candidate_id=candidate_id,
+                draft_id=draft.draft_id,
+                source_version=draft.source_version,
+                status="already_active" if compatible else "conflict",
+                action=ongoing_action,
+                reason=None if compatible else "incompatible_ongoing_action",
+            )
 
     def load_candidate_review(
         self, recording_id: UUID, candidate_id: str
@@ -208,21 +289,16 @@ class ActionService:
         return action
 
     def delete_action(self, action_id: UUID) -> tuple[MoodAction, int]:
+        with self._mutation_lock:
+            return self._delete_action(action_id)
+
+    def _delete_action(self, action_id: UUID) -> tuple[MoodAction, int]:
         self.prepare()
         action = self.load_action(action_id)
         action_path = self._action_path(action_id)
-        review_path = self._review_path(action.recording_id, action.candidate_id)
+        review_paths = self._review_paths_for_action(action_id)
         entries_path = self._entry_directory(action_id)
         deletion_path = self._deletion_path(action_id)
-
-        if review_path.is_file():
-            review = self._load_model(
-                review_path,
-                MoodCandidateReviewResponse,
-                "Failed to load Action review",
-            )
-            if review.action is None or review.action.id != action_id:
-                raise ActionConflictError("Action review no longer matches this Action")
 
         try:
             entry_count = (
@@ -235,7 +311,10 @@ class ActionService:
             raise ActionStorageError("Failed to prepare Action deletion") from error
 
         moves = [
-            (review_path, deletion_path / "reviews" / review_path.name),
+            *[
+                (review_path, deletion_path / "reviews" / review_path.name)
+                for review_path in review_paths
+            ],
             (entries_path, deletion_path / "entries" / entries_path.name),
             (action_path, deletion_path / "records" / action_path.name),
         ]
@@ -541,6 +620,56 @@ class ActionService:
         if not path.is_file():
             return None
         return self._load_model(path, MoodEntry, "Failed to load mood entry")
+
+    def _find_active_ongoing_action(self) -> MoodAction | None:
+        return next(
+            (
+                action
+                for action in self.list_actions()
+                if action.type == "record_mood"
+                and action.state == "active"
+                and action.settings.duration_kind == "ongoing"
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _candidate_matches_action(
+        candidate: RecordMoodCandidate,
+        action: MoodAction,
+    ) -> bool:
+        candidate_configuration = candidate.configuration
+        action_configuration = action.settings.configuration
+        if candidate_configuration is None:
+            return False
+        candidate_scale = candidate_configuration.scale
+        action_scale = action_configuration.scale
+        return (
+            candidate.frequency == action.settings.frequency
+            and candidate.timing == action.settings.timing
+            and candidate.reference_period == action.settings.reference_period
+            and candidate_configuration.input_kind == action_configuration.input_kind
+            and candidate_configuration.context_enabled == action_configuration.context_enabled
+            and candidate_scale == action_scale
+        )
+
+    def _review_paths_for_action(self, action_id: UUID) -> list[Path]:
+        if not self.reviews_directory.is_dir():
+            return []
+        try:
+            paths = list(self.reviews_directory.glob("*.json"))
+        except OSError as error:
+            raise ActionStorageError("Failed to list Action reviews") from error
+        linked: list[Path] = []
+        for path in paths:
+            review = self._load_model(
+                path,
+                MoodCandidateReviewResponse,
+                "Failed to load Action review",
+            )
+            if review.action is not None and review.action.id == action_id:
+                linked.append(path)
+        return linked
 
     @staticmethod
     def _load_model(path: Path, model: type, message: str):

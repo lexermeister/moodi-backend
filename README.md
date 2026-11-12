@@ -357,6 +357,23 @@ schedule with no end date. The exact time is a stored logistical preference; thi
 schedule notifications. Fixed schedules receive an inclusive end date, while ongoing Actions stay
 active until a later explicit state change.
 
+Before setup, the mobile app resolves a candidate with:
+
+```http
+GET /recordings/{recording_id}/action-candidates/{candidate_id}/resolution
+```
+
+Only one active ongoing Record mood Action is created for the current single-subject backend. When
+a compatible candidate from a later session is activated, its review is stored as
+`linked_existing` and points to the earlier Action. The earlier Action's schedule, source fields,
+entries, and history are not changed. If the candidate's clinical tracking configuration differs,
+resolution returns `conflict` and activation returns HTTP `409` rather than creating or modifying an
+Action. Fixed-duration Actions do not trigger this restriction.
+
+This milestone has no user identity or authentication, so the uniqueness scope is the complete
+backend installation. A shared multi-user deployment must add an owner identifier and scope the
+constraint by owner before using this behavior for different people.
+
 Record mood entries support draft, confirmation, correction history, deletion, and selected-entry
 export under `/actions/{action_id}/entries`. Entries before the Action start date, or after a fixed
 Action's end date, are rejected.
@@ -372,11 +389,11 @@ A successful deletion returns HTTP `204` with no response body. It permanently r
 - the Action record;
 - every confirmed mood entry and saved draft belonging to that Action;
 - the entries' stored revision history; and
-- the candidate-review record that activated the Action.
+- every candidate-review record linked to the Action.
 
 The source recording, transcript, generated Session Insights, and agreed-action candidate are not
-deleted. Removing the candidate review makes the item appear as **Needs setup** when the source
-session is opened again, and the user can explicitly activate a fresh Action with empty history.
+deleted. Removing the candidate reviews makes each linked item appear as **Needs setup** when its
+source session is opened again, and the user can explicitly activate a fresh Action with empty history.
 Files previously exported or shared outside the backend cannot be recalled by this endpoint.
 
 The filesystem operation stages the review, entry directory, and Action record before final

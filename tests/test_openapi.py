@@ -12,3 +12,7 @@ def test_api_documentation_includes_action_deletion(client: TestClient) -> None:
     assert operation["summary"] == "Permanently delete a mood Action"
     assert "session insights are preserved" in operation["description"]
     assert set(operation["responses"]) >= {"204", "404", "409", "502"}
+    resolution = response.json()["paths"][
+        "/recordings/{recording_id}/action-candidates/{candidate_id}/resolution"
+    ]["get"]
+    assert resolution["summary"] == "Resolve a Record mood candidate against current Actions"
