@@ -9,19 +9,20 @@ from threading import RLock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.schemas.actions import (
-    AmendMoodEntryRequest,
-    ConfirmMoodEntryRequest,
-    MoodAction,
-    MoodCandidateResolutionResponse,
-    MoodCandidateReviewRequest,
-    MoodCandidateReviewResponse,
-    MoodEntry,
-    MoodEntryRevision,
-    MoodEntryValues,
-    RecordMoodActionSettings,
-    SaveMoodEntryDraftRequest,
+    AmendRatingEntryRequest,
+    ConfirmRatingEntryRequest,
+    RatingAction,
+    RatingCandidateResolutionResponse,
+    RatingCandidateReviewRequest,
+    RatingCandidateReviewResponse,
+    RatingEntry,
+    RatingEntryRevision,
+    RatingEntryValues,
+    RecordRatingActionSettings,
+    SaveRatingEntryDraftRequest,
 )
-from app.schemas.session_insights import RecordMoodCandidate
+from app.schemas.session_insights import RecordRatingCandidate
+from app.services.rating_metrics import RatingMetric
 from app.services.session_insights import CompletedSessionInsights, SessionInsightsService
 
 
@@ -30,7 +31,7 @@ class ActionError(Exception):
 
 
 class ActionNotFoundError(ActionError):
-    """Raised when an Action or mood entry does not exist."""
+    """Raised when an Action or rating entry does not exist."""
 
 
 class ActionConflictError(ActionError):
@@ -70,8 +71,8 @@ class ActionService:
         self,
         recording_id: UUID,
         candidate_id: str,
-        request: MoodCandidateReviewRequest,
-    ) -> MoodCandidateReviewResponse:
+        request: RatingCandidateReviewRequest,
+    ) -> RatingCandidateReviewResponse:
         with self._mutation_lock:
             return self._review_candidate(recording_id, candidate_id, request)
 
@@ -79,11 +80,11 @@ class ActionService:
         self,
         recording_id: UUID,
         candidate_id: str,
-        request: MoodCandidateReviewRequest,
-    ) -> MoodCandidateReviewResponse:
+        request: RatingCandidateReviewRequest,
+    ) -> RatingCandidateReviewResponse:
         self.prepare()
         if re.fullmatch(r"C\d+", candidate_id) is None:
-            raise ActionNotFoundError("Record mood candidate was not found")
+            raise ActionNotFoundError("Record rating candidate was not found")
 
         draft = self._load_current_draft(recording_id)
         if request.draft_id != draft.draft_id or request.source_version != draft.source_version:
@@ -95,7 +96,7 @@ class ActionService:
             None,
         )
         if candidate is None:
-            raise ActionNotFoundError("Record mood candidate was not found")
+            raise ActionNotFoundError("Record rating candidate was not found")
 
         existing = self._load_review(recording_id, candidate_id)
         if existing is not None:
@@ -116,7 +117,7 @@ class ActionService:
             return existing
 
         reviewed_at = datetime.now(UTC)
-        action: MoodAction | None = None
+        action: RatingAction | None = None
         review_disposition = "rejected"
         if request.disposition == "activate":
             settings = request.settings
@@ -143,13 +144,14 @@ class ActionService:
                     "end_date": end_date,
                 }
             )
-            settings = RecordMoodActionSettings.model_validate(settings.model_dump())
+            settings = RecordRatingActionSettings.model_validate(settings.model_dump())
             self._validate_reviewed_settings(candidate, settings)
-            ongoing_action = self._find_active_ongoing_action()
+            ongoing_action = self._find_active_ongoing_action(candidate.metric)
             if ongoing_action is not None:
                 if not self._candidate_matches_action(candidate, ongoing_action):
                     raise ActionConflictError(
-                        "An active ongoing mood Action already has different settings"
+                        "An active ongoing rating Action for this metric "
+                        "already has different settings"
                     )
                 action = ongoing_action
                 review_disposition = "linked_existing"
@@ -158,9 +160,10 @@ class ActionService:
                     NAMESPACE_URL,
                     f"moodi:{recording_id}:{draft.source_version}:{candidate_id}",
                 )
-                action = MoodAction(
+                action = RatingAction(
                     id=action_id,
-                    type="record_mood",
+                    type="record_rating",
+                    metric=candidate.metric,
                     state="active",
                     recording_id=recording_id,
                     transcript_version=draft.source_version,
@@ -185,7 +188,7 @@ class ActionService:
                     action = existing_action
                 review_disposition = "activated"
 
-        review = MoodCandidateReviewResponse(
+        review = RatingCandidateReviewResponse(
             recording_id=recording_id,
             candidate_id=candidate_id,
             draft_id=draft.draft_id,
@@ -202,18 +205,18 @@ class ActionService:
 
     def resolve_candidate(
         self, recording_id: UUID, candidate_id: str
-    ) -> MoodCandidateResolutionResponse:
+    ) -> RatingCandidateResolutionResponse:
         with self._mutation_lock:
             self.prepare()
             if re.fullmatch(r"C\d+", candidate_id) is None:
-                raise ActionNotFoundError("Record mood candidate was not found")
+                raise ActionNotFoundError("Record rating candidate was not found")
             draft = self._load_current_draft(recording_id)
             candidate = next(
                 (item for item in draft.result.action_candidates if item.id == candidate_id),
                 None,
             )
             if candidate is None:
-                raise ActionNotFoundError("Record mood candidate was not found")
+                raise ActionNotFoundError("Record rating candidate was not found")
 
             review = self._load_review(recording_id, candidate_id)
             if review is not None:
@@ -224,7 +227,7 @@ class ActionService:
                     raise ActionConflictError(
                         "Session insights changed; review the latest candidate"
                     )
-                return MoodCandidateResolutionResponse(
+                return RatingCandidateResolutionResponse(
                     recording_id=recording_id,
                     candidate_id=candidate_id,
                     draft_id=draft.draft_id,
@@ -233,9 +236,9 @@ class ActionService:
                     action=review.action,
                 )
 
-            ongoing_action = self._find_active_ongoing_action()
+            ongoing_action = self._find_active_ongoing_action(candidate.metric)
             if ongoing_action is None:
-                return MoodCandidateResolutionResponse(
+                return RatingCandidateResolutionResponse(
                     recording_id=recording_id,
                     candidate_id=candidate_id,
                     draft_id=draft.draft_id,
@@ -244,7 +247,7 @@ class ActionService:
                     action=None,
                 )
             compatible = self._candidate_matches_action(candidate, ongoing_action)
-            return MoodCandidateResolutionResponse(
+            return RatingCandidateResolutionResponse(
                 recording_id=recording_id,
                 candidate_id=candidate_id,
                 draft_id=draft.draft_id,
@@ -256,7 +259,7 @@ class ActionService:
 
     def load_candidate_review(
         self, recording_id: UUID, candidate_id: str
-    ) -> MoodCandidateReviewResponse:
+    ) -> RatingCandidateReviewResponse:
         self._recover_pending_deletions()
         review = self._load_review(recording_id, candidate_id)
         if review is None:
@@ -266,9 +269,9 @@ class ActionService:
             raise ActionConflictError("Session insights changed; review the latest candidate")
         return review
 
-    def list_actions(self, recording_id: UUID | None = None) -> list[MoodAction]:
+    def list_actions(self, recording_id: UUID | None = None) -> list[RatingAction]:
         self._recover_pending_deletions()
-        actions: list[MoodAction] = []
+        actions: list[RatingAction] = []
         if not self.actions_directory.is_dir():
             return actions
         try:
@@ -276,23 +279,23 @@ class ActionService:
         except OSError as error:
             raise ActionStorageError("Failed to list Actions") from error
         for path in paths:
-            action = self._load_model(path, MoodAction, "Failed to load Action")
+            action = self._load_model(path, RatingAction, "Failed to load Action")
             if recording_id is None or action.recording_id == recording_id:
                 actions.append(action)
         return sorted(actions, key=lambda item: item.created_at, reverse=True)
 
-    def load_action(self, action_id: UUID) -> MoodAction:
+    def load_action(self, action_id: UUID) -> RatingAction:
         self._recover_pending_deletions()
         action = self._load_action_if_present(action_id)
         if action is None:
-            raise ActionNotFoundError("Mood Action was not found")
+            raise ActionNotFoundError("Rating Action was not found")
         return action
 
-    def delete_action(self, action_id: UUID) -> tuple[MoodAction, int]:
+    def delete_action(self, action_id: UUID) -> tuple[RatingAction, int]:
         with self._mutation_lock:
             return self._delete_action(action_id)
 
-    def _delete_action(self, action_id: UUID) -> tuple[MoodAction, int]:
+    def _delete_action(self, action_id: UUID) -> tuple[RatingAction, int]:
         self.prepare()
         action = self.load_action(action_id)
         action_path = self._action_path(action_id)
@@ -342,8 +345,8 @@ class ActionService:
         self,
         action_id: UUID,
         entry_id: UUID,
-        request: SaveMoodEntryDraftRequest,
-    ) -> MoodEntry:
+        request: SaveRatingEntryDraftRequest,
+    ) -> RatingEntry:
         action = self.load_action(action_id)
         self._validate_values(action, request.values, confirmed=False)
         existing = self._load_entry_if_present(action_id, entry_id)
@@ -370,8 +373,8 @@ class ActionService:
         self,
         action_id: UUID,
         entry_id: UUID,
-        request: ConfirmMoodEntryRequest,
-    ) -> MoodEntry:
+        request: ConfirmRatingEntryRequest,
+    ) -> RatingEntry:
         action = self.load_action(action_id)
         self._validate_values(action, request.values, confirmed=True)
         existing = self._load_entry_if_present(action_id, entry_id)
@@ -381,7 +384,7 @@ class ActionService:
                 and existing.values == request.values
             ):
                 return existing
-            raise ActionConflictError("Mood entry is already confirmed")
+            raise ActionConflictError("Rating entry is already confirmed")
         self._ensure_revision(existing, request.expected_revision)
 
         now = datetime.now(UTC)
@@ -401,13 +404,13 @@ class ActionService:
         self,
         action_id: UUID,
         entry_id: UUID,
-        request: AmendMoodEntryRequest,
-    ) -> MoodEntry:
+        request: AmendRatingEntryRequest,
+    ) -> RatingEntry:
         action = self.load_action(action_id)
         self._validate_values(action, request.values, confirmed=True)
         existing = self._load_entry_if_present(action_id, entry_id)
         if existing is None:
-            raise ActionNotFoundError("Mood entry was not found")
+            raise ActionNotFoundError("Rating entry was not found")
         if existing.status != "confirmed":
             raise ActionConflictError("Draft entries must be saved or confirmed")
         self._ensure_revision(existing, request.expected_revision)
@@ -431,13 +434,13 @@ class ActionService:
         action_id: UUID,
         date_from: date | None = None,
         date_to: date | None = None,
-    ) -> list[MoodEntry]:
+    ) -> list[RatingEntry]:
         self.load_action(action_id)
         directory = self._entry_directory(action_id)
         if not directory.is_dir():
             return []
         entries = [
-            self._load_model(path, MoodEntry, "Failed to load mood entry")
+            self._load_model(path, RatingEntry, "Failed to load rating entry")
             for path in directory.glob("*.json")
         ]
         return sorted(
@@ -455,13 +458,13 @@ class ActionService:
         self.load_action(action_id)
         path = self._entry_path(action_id, entry_id)
         if not path.is_file():
-            raise ActionNotFoundError("Mood entry was not found")
+            raise ActionNotFoundError("Rating entry was not found")
         try:
             path.unlink()
         except OSError as error:
-            raise ActionStorageError("Failed to delete mood entry") from error
+            raise ActionStorageError("Failed to delete rating entry") from error
 
-    def export_entries(self, action_id: UUID, entry_ids: list[UUID]) -> list[MoodEntry]:
+    def export_entries(self, action_id: UUID, entry_ids: list[UUID]) -> list[RatingEntry]:
         if len(entry_ids) != len(set(entry_ids)):
             raise ActionValidationError(
                 "Export entry IDs are duplicated",
@@ -479,12 +482,12 @@ class ActionService:
 
     @staticmethod
     def _validate_reviewed_settings(
-        candidate: RecordMoodCandidate,
-        settings: RecordMoodActionSettings,
+        candidate: RecordRatingCandidate,
+        settings: RecordRatingActionSettings,
     ) -> None:
         if candidate.state != "review_ready":
             raise ActionValidationError(
-                "Record mood candidate is not ready for review",
+                "Record rating candidate is not ready for review",
                 reason="candidate_not_reviewable",
             )
         if (
@@ -501,20 +504,20 @@ class ActionService:
 
     @staticmethod
     def _validate_values(
-        action: MoodAction,
-        values: MoodEntryValues,
+        action: RatingAction,
+        values: RatingEntryValues,
         *,
         confirmed: bool,
     ) -> None:
         configuration = action.settings.configuration
         if action.settings.start_date and values.relevant_date < action.settings.start_date:
             raise ActionValidationError(
-                "Mood entry is before this Action starts",
+                "Rating entry is before this Action starts",
                 reason="entry_before_action",
             )
         if action.settings.end_date and values.relevant_date > action.settings.end_date:
             raise ActionValidationError(
-                "Mood entry is after this Action ends",
+                "Rating entry is after this Action ends",
                 reason="entry_after_action",
             )
         if values.context is not None and not configuration.context_enabled:
@@ -523,63 +526,62 @@ class ActionService:
                 reason="unsupported_context",
             )
         if configuration.input_kind == "numeric_0_10":
-            if values.mood_label is not None:
+            if values.rating_label is not None:
                 raise ActionValidationError(
-                    "This Action accepts a numeric mood rating",
-                    reason="unsupported_mood_label",
+                    "This Action accepts a numeric rating",
+                    reason="unsupported_rating_label",
                 )
-            if values.mood_value is not None and (
+            if values.rating_value is not None and (
                 configuration.scale is None or values.scale_id != configuration.scale.id
             ):
                 raise ActionValidationError(
-                    "Mood rating scale does not match the Action",
+                    "Rating scale does not match the Action",
                     reason="scale_mismatch",
                 )
         else:
-            if values.mood_value is not None or values.scale_id is not None:
+            if values.rating_value is not None or values.scale_id is not None:
                 raise ActionValidationError(
-                    "This Action accepts a mood label",
-                    reason="unsupported_mood_rating",
+                    "This Action accepts a rating label",
+                    reason="unsupported_numeric_rating",
                 )
-        if confirmed and not any(
-            value is not None for value in (values.mood_value, values.mood_label, values.context)
-        ):
+        rating_fields = (values.rating_value, values.rating_label, values.context)
+        if confirmed and not any(value is not None for value in rating_fields):
             raise ActionValidationError(
-                "Confirmed mood entry cannot be empty",
+                "Confirmed rating entry cannot be empty",
                 reason="empty_confirmed_entry",
             )
 
     @staticmethod
-    def _ensure_revision(existing: MoodEntry | None, expected_revision: int | None) -> None:
+    def _ensure_revision(existing: RatingEntry | None, expected_revision: int | None) -> None:
         if existing is None:
             if expected_revision is not None:
-                raise ActionConflictError("Mood entry no longer matches the reviewed revision")
+                raise ActionConflictError("Rating entry no longer matches the reviewed revision")
             return
         if expected_revision is not None and expected_revision != existing.revision:
-            raise ActionConflictError("Mood entry changed; review the latest version")
+            raise ActionConflictError("Rating entry changed; review the latest version")
 
     @staticmethod
     def _next_entry(
         *,
-        existing: MoodEntry | None,
+        existing: RatingEntry | None,
         entry_id: UUID,
         action_id: UUID,
-        values: MoodEntryValues,
+        values: RatingEntryValues,
         status: str,
         now: datetime,
         idempotency_key: str | None,
-    ) -> MoodEntry:
+    ) -> RatingEntry:
         history = list(existing.revision_history) if existing is not None else []
         if existing is not None:
             history.append(
-                MoodEntryRevision(
+                RatingEntryRevision(
                     revision=existing.revision,
                     values=existing.values,
                     status=existing.status,
                     changed_at=existing.updated_at,
                 )
             )
-        return MoodEntry(
+        return RatingEntry(
             id=entry_id,
             action_id=action_id,
             status=status,
@@ -601,32 +603,33 @@ class ActionService:
             raise ActionNotFoundError("Generate session insights before reviewing Actions")
         return draft
 
-    def _load_action_if_present(self, action_id: UUID) -> MoodAction | None:
+    def _load_action_if_present(self, action_id: UUID) -> RatingAction | None:
         path = self._action_path(action_id)
         if not path.is_file():
             return None
-        return self._load_model(path, MoodAction, "Failed to load Action")
+        return self._load_model(path, RatingAction, "Failed to load Action")
 
     def _load_review(
         self, recording_id: UUID, candidate_id: str
-    ) -> MoodCandidateReviewResponse | None:
+    ) -> RatingCandidateReviewResponse | None:
         path = self._review_path(recording_id, candidate_id)
         if not path.is_file():
             return None
-        return self._load_model(path, MoodCandidateReviewResponse, "Failed to load Action review")
+        return self._load_model(path, RatingCandidateReviewResponse, "Failed to load Action review")
 
-    def _load_entry_if_present(self, action_id: UUID, entry_id: UUID) -> MoodEntry | None:
+    def _load_entry_if_present(self, action_id: UUID, entry_id: UUID) -> RatingEntry | None:
         path = self._entry_path(action_id, entry_id)
         if not path.is_file():
             return None
-        return self._load_model(path, MoodEntry, "Failed to load mood entry")
+        return self._load_model(path, RatingEntry, "Failed to load rating entry")
 
-    def _find_active_ongoing_action(self) -> MoodAction | None:
+    def _find_active_ongoing_action(self, metric: RatingMetric) -> RatingAction | None:
         return next(
             (
                 action
                 for action in self.list_actions()
-                if action.type == "record_mood"
+                if action.type == "record_rating"
+                and action.metric == metric
                 and action.state == "active"
                 and action.settings.duration_kind == "ongoing"
             ),
@@ -635,8 +638,8 @@ class ActionService:
 
     @staticmethod
     def _candidate_matches_action(
-        candidate: RecordMoodCandidate,
-        action: MoodAction,
+        candidate: RecordRatingCandidate,
+        action: RatingAction,
     ) -> bool:
         candidate_configuration = candidate.configuration
         action_configuration = action.settings.configuration
@@ -645,7 +648,8 @@ class ActionService:
         candidate_scale = candidate_configuration.scale
         action_scale = action_configuration.scale
         return (
-            candidate.frequency == action.settings.frequency
+            candidate.metric == action.metric
+            and candidate.frequency == action.settings.frequency
             and candidate.timing == action.settings.timing
             and candidate.reference_period == action.settings.reference_period
             and candidate_configuration.input_kind == action_configuration.input_kind
@@ -664,7 +668,7 @@ class ActionService:
         for path in paths:
             review = self._load_model(
                 path,
-                MoodCandidateReviewResponse,
+                RatingCandidateReviewResponse,
                 "Failed to load Action review",
             )
             if review.action is not None and review.action.id == action_id:
@@ -678,7 +682,7 @@ class ActionService:
         except Exception as error:
             raise ActionStorageError(message) from error
 
-    def _save_entry(self, entry: MoodEntry) -> None:
+    def _save_entry(self, entry: RatingEntry) -> None:
         directory = self._entry_directory(entry.action_id)
         directory.mkdir(parents=True, exist_ok=True)
         self._atomic_write(

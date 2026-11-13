@@ -20,7 +20,7 @@ from app.schemas.session_insights import (
 )
 from app.services.transcript_store import TranscriptStore
 
-SESSION_INSIGHTS_PROMPT_VERSION = "v0.4.2"
+SESSION_INSIGHTS_PROMPT_VERSION = "v0.4.4"
 MAX_GENERATION_ATTEMPTS = 2
 logger = get_logger("services.session_insights")
 

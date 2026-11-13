@@ -79,7 +79,7 @@ def activate_ongoing_candidate(
 
 def entry_values(
     *,
-    mood_value: int = 0,
+    rating_value: int = 0,
     context: str | None = None,
     relevant_date: str = "2026-11-10",
     entry_time: str = "2026-11-10T20:00:00+01:00",
@@ -89,8 +89,8 @@ def entry_values(
         "entry_time": entry_time,
         "timezone_offset_minutes": 60,
         "day_key": relevant_date,
-        "mood_value": mood_value,
-        "mood_label": None,
+        "rating_value": rating_value,
+        "rating_label": None,
         "context": context,
         "scale_id": "overall-day-mood-0-10-v1",
     }
@@ -99,7 +99,7 @@ def entry_values(
 def test_candidate_activation_is_reviewed_persisted_and_idempotent(
     recordings_dir: Path,
 ) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
         first = activate_candidate(client, recording, insights)
@@ -130,7 +130,7 @@ def test_candidate_activation_is_reviewed_persisted_and_idempotent(
 def test_candidate_activation_accepts_user_selected_fixed_schedule(
     recordings_dir: Path,
 ) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
         candidate = insights["result"]["action_candidates"][0]
@@ -167,7 +167,7 @@ def test_candidate_activation_accepts_user_selected_fixed_schedule(
 
 
 def test_candidate_activation_accepts_ongoing_schedule(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
         candidate = insights["result"]["action_candidates"][0]
@@ -205,7 +205,7 @@ def test_candidate_activation_accepts_ongoing_schedule(recordings_dir: Path) -> 
             f"/actions/{action_id}/entries/{entry_id}/confirm",
             json={
                 "values": entry_values(
-                    mood_value=8,
+                    rating_value=8,
                     relevant_date="2027-05-01",
                     entry_time="2027-05-01T20:00:00+01:00",
                 ),
@@ -217,7 +217,7 @@ def test_candidate_activation_accepts_ongoing_schedule(recordings_dir: Path) -> 
 
 
 def test_candidate_reuses_compatible_active_ongoing_action(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         first_recording, first_insights = generate_candidate(client)
         first_candidate = first_insights["result"]["action_candidates"][0]
@@ -226,7 +226,7 @@ def test_candidate_reuses_compatible_active_ongoing_action(recordings_dir: Path)
         entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
         saved_entry = client.put(
             f"/actions/{action['id']}/entries/{entry_id}/draft",
-            json={"values": entry_values(mood_value=6), "expected_revision": None},
+            json={"values": entry_values(rating_value=6), "expected_revision": None},
         )
         assert saved_entry.status_code == 200
 
@@ -270,7 +270,7 @@ def test_candidate_reuses_compatible_active_ongoing_action(recordings_dir: Path)
 
 
 def test_fixed_action_does_not_block_another_action(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         first_recording, first_insights = generate_candidate(client)
         first_action = activate_candidate(client, first_recording, first_insights)["action"]
@@ -289,8 +289,38 @@ def test_fixed_action_does_not_block_another_action(recordings_dir: Path) -> Non
         assert len(client.get("/actions").json()["actions"]) == 2
 
 
+def test_active_ongoing_actions_are_unique_per_metric(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True, rating_metric="mood")
+    with configured_client(recordings_dir, fake_openai) as client:
+        mood_recording, mood_insights = generate_candidate(client)
+        mood_action = activate_ongoing_candidate(client, mood_recording, mood_insights)["action"]
+
+        fake_openai.responses.rating_metric = "motivation"
+        motivation_recording, motivation_insights = generate_candidate(client)
+        motivation_candidate = motivation_insights["result"]["action_candidates"][0]
+        resolution = client.get(
+            f"/recordings/{motivation_recording['id']}/action-candidates/"
+            f"{motivation_candidate['id']}/resolution"
+        )
+        motivation_action = activate_ongoing_candidate(
+            client,
+            motivation_recording,
+            motivation_insights,
+        )["action"]
+
+        assert resolution.status_code == 200
+        assert resolution.json()["status"] == "needs_setup"
+        assert mood_action["metric"] == "mood"
+        assert motivation_action["metric"] == "motivation"
+        assert motivation_action["id"] != mood_action["id"]
+        assert {action["metric"] for action in client.get("/actions").json()["actions"]} == {
+            "mood",
+            "motivation",
+        }
+
+
 def test_incompatible_ongoing_action_blocks_activation(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         first_recording, first_insights = generate_candidate(client)
         action = activate_ongoing_candidate(client, first_recording, first_insights)["action"]
@@ -322,13 +352,15 @@ def test_incompatible_ongoing_action_blocks_activation(recordings_dir: Path) -> 
         assert resolution.json()["action"]["id"] == action["id"]
         assert activation.status_code == 409
         assert activation.json() == {
-            "detail": "An active ongoing mood Action already has different settings"
+            "detail": (
+                "An active ongoing rating Action for this metric already has different settings"
+            )
         }
         assert len(client.get("/actions").json()["actions"]) == 1
 
 
 def test_candidate_activation_rejects_clinical_setting_edits(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
         candidate = insights["result"]["action_candidates"][0]
@@ -352,7 +384,7 @@ def test_candidate_activation_rejects_clinical_setting_edits(recordings_dir: Pat
 
 
 def test_rejected_candidate_creates_no_action(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
         candidate = insights["result"]["action_candidates"][0]
@@ -373,7 +405,7 @@ def test_rejected_candidate_creates_no_action(recordings_dir: Path) -> None:
 
 
 def test_mood_entry_draft_confirm_amend_export_and_delete(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
@@ -386,7 +418,7 @@ def test_mood_entry_draft_confirm_amend_export_and_delete(recordings_dir: Path) 
         )
         assert draft.status_code == 200
         assert draft.json()["status"] == "draft"
-        assert draft.json()["values"]["mood_value"] == 0
+        assert draft.json()["values"]["rating_value"] == 0
 
         confirm_payload = {
             "values": entry_values(),
@@ -408,10 +440,10 @@ def test_mood_entry_draft_confirm_amend_export_and_delete(recordings_dir: Path) 
 
         amended = client.patch(
             f"/actions/{action_id}/entries/{entry_id}",
-            json={"values": entry_values(mood_value=7), "expected_revision": 2},
+            json={"values": entry_values(rating_value=7), "expected_revision": 2},
         )
         assert amended.status_code == 200
-        assert amended.json()["values"]["mood_value"] == 7
+        assert amended.json()["values"]["rating_value"] == 7
         assert amended.json()["revision"] == 3
         assert len(amended.json()["revision_history"]) == 2
 
@@ -431,10 +463,61 @@ def test_mood_entry_draft_confirm_amend_export_and_delete(recordings_dir: Path) 
         assert client.get(f"/actions/{action_id}/entries").json() == {"entries": []}
 
 
+def test_legacy_mood_action_and_entry_are_loaded_as_rating_records(
+    recordings_dir: Path,
+) -> None:
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
+    entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording, insights = generate_candidate(client)
+        candidate = insights["result"]["action_candidates"][0]
+        action = activate_candidate(client, recording, insights)["action"]
+        action_id = action["id"]
+        saved = client.put(
+            f"/actions/{action_id}/entries/{entry_id}/draft",
+            json={"values": entry_values(rating_value=6), "expected_revision": None},
+        )
+        assert saved.status_code == 200
+
+        action_path = recordings_dir / "actions" / "records" / f"{action_id}.json"
+        legacy_action = json.loads(action_path.read_text(encoding="utf-8"))
+        legacy_action["type"] = "record_mood"
+        legacy_action.pop("metric")
+        action_path.write_text(json.dumps(legacy_action), encoding="utf-8")
+
+        entry_path = recordings_dir / "actions" / "entries" / action_id / f"{entry_id}.json"
+        legacy_entry = json.loads(entry_path.read_text(encoding="utf-8"))
+        legacy_entry["values"]["mood_value"] = legacy_entry["values"].pop("rating_value")
+        legacy_entry["values"]["mood_label"] = legacy_entry["values"].pop("rating_label")
+        entry_path.write_text(json.dumps(legacy_entry), encoding="utf-8")
+
+        review_path = (
+            recordings_dir / "actions" / "reviews" / f"{recording['id']}.{candidate['id']}.json"
+        )
+        legacy_review = json.loads(review_path.read_text(encoding="utf-8"))
+        legacy_review["action"]["type"] = "record_mood"
+        legacy_review["action"].pop("metric")
+        review_path.write_text(json.dumps(legacy_review), encoding="utf-8")
+
+        loaded_action = client.get(f"/actions/{action_id}")
+        loaded_entries = client.get(f"/actions/{action_id}/entries")
+        loaded_review = client.get(
+            f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review"
+        )
+
+        assert loaded_action.status_code == loaded_entries.status_code == 200
+        assert loaded_review.status_code == 200
+        assert loaded_action.json()["type"] == "record_rating"
+        assert loaded_action.json()["metric"] == "mood"
+        assert loaded_entries.json()["entries"][0]["values"]["rating_value"] == 6
+        assert "mood_value" not in loaded_entries.json()["entries"][0]["values"]
+        assert loaded_review.json()["action"]["metric"] == "mood"
+
+
 def test_delete_action_removes_entries_and_review_and_can_be_set_up_again(
     recordings_dir: Path,
 ) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     draft_entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
     confirmed_entry_id = "58ab0b60-afcf-40ac-9734-c7390cf8f15f"
     with configured_client(recordings_dir, fake_openai) as client:
@@ -445,12 +528,12 @@ def test_delete_action_removes_entries_and_review_and_can_be_set_up_again(
 
         draft = client.put(
             f"/actions/{action_id}/entries/{draft_entry_id}/draft",
-            json={"values": entry_values(mood_value=4), "expected_revision": None},
+            json={"values": entry_values(rating_value=4), "expected_revision": None},
         )
         confirmed = client.post(
             f"/actions/{action_id}/entries/{confirmed_entry_id}/confirm",
             json={
-                "values": entry_values(mood_value=7),
+                "values": entry_values(rating_value=7),
                 "expected_revision": None,
                 "idempotency_key": "delete-action-confirmed-entry",
             },
@@ -477,7 +560,7 @@ def test_delete_action_removes_entries_and_review_and_can_be_set_up_again(
 
 
 def test_delete_action_keeps_other_actions_and_entries(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         first_recording, first_insights = generate_candidate(client)
         first_action = activate_candidate(client, first_recording, first_insights)["action"]
@@ -486,7 +569,7 @@ def test_delete_action_keeps_other_actions_and_entries(recordings_dir: Path) -> 
         second_entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
         saved = client.put(
             f"/actions/{second_action['id']}/entries/{second_entry_id}/draft",
-            json={"values": entry_values(mood_value=5), "expected_revision": None},
+            json={"values": entry_values(rating_value=5), "expected_revision": None},
         )
         assert saved.status_code == 200
 
@@ -500,19 +583,19 @@ def test_delete_action_keeps_other_actions_and_entries(recordings_dir: Path) -> 
 
 
 def test_delete_action_returns_not_found_for_unknown_action(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         response = client.delete("/actions/2d063c5f-86a1-42a7-8fa4-f51d17594fcc")
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Mood Action was not found"}
+    assert response.json() == {"detail": "Rating Action was not found"}
 
 
 def test_delete_action_rolls_back_if_staging_fails(
     recordings_dir: Path,
     monkeypatch,
 ) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
         candidate = insights["result"]["action_candidates"][0]
@@ -521,7 +604,7 @@ def test_delete_action_rolls_back_if_staging_fails(
         entry_id = "2d063c5f-86a1-42a7-8fa4-f51d17594fcc"
         saved = client.put(
             f"/actions/{action_id}/entries/{entry_id}/draft",
-            json={"values": entry_values(mood_value=5), "expected_revision": None},
+            json={"values": entry_values(rating_value=5), "expected_revision": None},
         )
         assert saved.status_code == 200
 
@@ -547,14 +630,14 @@ def test_delete_action_rolls_back_if_staging_fails(
 
 
 def test_action_configuration_rejects_unassigned_context(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
         action_id = activate_candidate(client, recording, insights)["action"]["id"]
         response = client.post(
             f"/actions/{action_id}/entries/2d063c5f-86a1-42a7-8fa4-f51d17594fcc/confirm",
             json={
-                "values": entry_values(mood_value=6, context="Not part of the assignment"),
+                "values": entry_values(rating_value=6, context="Not part of the assignment"),
                 "expected_revision": None,
                 "idempotency_key": "confirm-with-context",
             },
@@ -565,11 +648,11 @@ def test_action_configuration_rejects_unassigned_context(recordings_dir: Path) -
 
 
 def test_entry_day_key_must_match_captured_offset(recordings_dir: Path) -> None:
-    fake_openai = FakeOpenAIClient(record_mood_candidate=True)
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
         action_id = activate_candidate(client, recording, insights)["action"]["id"]
-        values = entry_values(mood_value=6)
+        values = entry_values(rating_value=6)
         values["day_key"] = "2026-11-11"
         response = client.put(
             f"/actions/{action_id}/entries/2d063c5f-86a1-42a7-8fa4-f51d17594fcc/draft",

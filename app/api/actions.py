@@ -6,18 +6,18 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 
 from app.core.logging import get_logger
 from app.schemas.actions import (
-    AmendMoodEntryRequest,
-    ConfirmMoodEntryRequest,
-    MoodAction,
-    MoodActionListResponse,
-    MoodCandidateResolutionResponse,
-    MoodCandidateReviewRequest,
-    MoodCandidateReviewResponse,
-    MoodEntry,
-    MoodEntryExportRequest,
-    MoodEntryExportResponse,
-    MoodEntryListResponse,
-    SaveMoodEntryDraftRequest,
+    AmendRatingEntryRequest,
+    ConfirmRatingEntryRequest,
+    RatingAction,
+    RatingActionListResponse,
+    RatingCandidateResolutionResponse,
+    RatingCandidateReviewRequest,
+    RatingCandidateReviewResponse,
+    RatingEntry,
+    RatingEntryExportRequest,
+    RatingEntryExportResponse,
+    RatingEntryListResponse,
+    SaveRatingEntryDraftRequest,
 )
 from app.services.actions import (
     ActionConflictError,
@@ -67,14 +67,14 @@ def _raise_action_error(error: Exception, *, event: str) -> Never:
 
 @router.put(
     "/recordings/{recording_id}/action-candidates/{candidate_id}/review",
-    response_model=MoodCandidateReviewResponse,
+    response_model=RatingCandidateReviewResponse,
 )
-def review_record_mood_candidate(
+def review_record_rating_candidate(
     recording_id: UUID,
     candidate_id: str,
-    payload: MoodCandidateReviewRequest,
+    payload: RatingCandidateReviewRequest,
     request: Request,
-) -> MoodCandidateReviewResponse:
+) -> RatingCandidateReviewResponse:
     try:
         get_recording_storage(request).find(recording_id)
         review = get_action_service(request).review_candidate(
@@ -102,13 +102,13 @@ def review_record_mood_candidate(
 
 @router.get(
     "/recordings/{recording_id}/action-candidates/{candidate_id}/review",
-    response_model=MoodCandidateReviewResponse,
+    response_model=RatingCandidateReviewResponse,
 )
-def get_record_mood_candidate_review(
+def get_record_rating_candidate_review(
     recording_id: UUID,
     candidate_id: str,
     request: Request,
-) -> MoodCandidateReviewResponse:
+) -> RatingCandidateReviewResponse:
     try:
         get_recording_storage(request).find(recording_id)
         return get_action_service(request).load_candidate_review(recording_id, candidate_id)
@@ -120,19 +120,20 @@ def get_record_mood_candidate_review(
 
 @router.get(
     "/recordings/{recording_id}/action-candidates/{candidate_id}/resolution",
-    response_model=MoodCandidateResolutionResponse,
-    summary="Resolve a Record mood candidate against current Actions",
+    response_model=RatingCandidateResolutionResponse,
+    summary="Resolve a Record rating candidate against current Actions",
     description=(
         "Reports whether the candidate needs setup, has already been reviewed, or can use an "
-        "existing active ongoing Record mood Action. An incompatible ongoing Action is returned "
-        "as a conflict resolution and is never changed by this operation."
+        "existing active ongoing Record rating Action for the same metric. An incompatible "
+        "ongoing Action is returned as a conflict resolution and is never changed by this "
+        "operation."
     ),
 )
-def resolve_record_mood_candidate(
+def resolve_record_rating_candidate(
     recording_id: UUID,
     candidate_id: str,
     request: Request,
-) -> MoodCandidateResolutionResponse:
+) -> RatingCandidateResolutionResponse:
     try:
         get_recording_storage(request).find(recording_id)
         return get_action_service(request).resolve_candidate(recording_id, candidate_id)
@@ -142,20 +143,20 @@ def resolve_record_mood_candidate(
         _raise_action_error(error, event="action_candidate_resolution_failed")
 
 
-@router.get("/actions", response_model=MoodActionListResponse)
-def list_mood_actions(
+@router.get("/actions", response_model=RatingActionListResponse)
+def list_rating_actions(
     request: Request,
     recording_id: Annotated[UUID | None, Query()] = None,
-) -> MoodActionListResponse:
+) -> RatingActionListResponse:
     try:
         actions = get_action_service(request).list_actions(recording_id)
     except ActionStorageError as error:
         _raise_action_error(error, event="actions_list_failed")
-    return MoodActionListResponse(actions=actions)
+    return RatingActionListResponse(actions=actions)
 
 
-@router.get("/actions/{action_id}", response_model=MoodAction)
-def get_mood_action(action_id: UUID, request: Request) -> MoodAction:
+@router.get("/actions/{action_id}", response_model=RatingAction)
+def get_rating_action(action_id: UUID, request: Request) -> RatingAction:
     try:
         return get_action_service(request).load_action(action_id)
     except (ActionNotFoundError, ActionStorageError) as error:
@@ -165,9 +166,9 @@ def get_mood_action(action_id: UUID, request: Request) -> MoodAction:
 @router.delete(
     "/actions/{action_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Permanently delete a mood Action",
+    summary="Permanently delete a rating Action",
     description=(
-        "Deletes the Action, all of its mood entries and drafts, their revision history, "
+        "Deletes the Action, all of its rating entries and drafts, their revision history, "
         "and the candidate review that activated it. The source recording, transcript, and "
         "session insights are preserved, so the candidate can be reviewed and activated again."
     ),
@@ -181,7 +182,7 @@ def get_mood_action(action_id: UUID, request: Request) -> MoodAction:
         },
     },
 )
-def delete_mood_action(action_id: UUID, request: Request) -> Response:
+def delete_rating_action(action_id: UUID, request: Request) -> Response:
     try:
         action, entry_count = get_action_service(request).delete_action(action_id)
     except (ActionNotFoundError, ActionConflictError, ActionStorageError) as error:
@@ -195,13 +196,13 @@ def delete_mood_action(action_id: UUID, request: Request) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.put("/actions/{action_id}/entries/{entry_id}/draft", response_model=MoodEntry)
-def save_mood_entry_draft(
+@router.put("/actions/{action_id}/entries/{entry_id}/draft", response_model=RatingEntry)
+def save_rating_entry_draft(
     action_id: UUID,
     entry_id: UUID,
-    payload: SaveMoodEntryDraftRequest,
+    payload: SaveRatingEntryDraftRequest,
     request: Request,
-) -> MoodEntry:
+) -> RatingEntry:
     try:
         return get_action_service(request).save_draft(action_id, entry_id, payload)
     except (
@@ -210,16 +211,16 @@ def save_mood_entry_draft(
         ActionValidationError,
         ActionStorageError,
     ) as error:
-        _raise_action_error(error, event="mood_entry_draft_failed")
+        _raise_action_error(error, event="rating_entry_draft_failed")
 
 
-@router.post("/actions/{action_id}/entries/{entry_id}/confirm", response_model=MoodEntry)
-def confirm_mood_entry(
+@router.post("/actions/{action_id}/entries/{entry_id}/confirm", response_model=RatingEntry)
+def confirm_rating_entry(
     action_id: UUID,
     entry_id: UUID,
-    payload: ConfirmMoodEntryRequest,
+    payload: ConfirmRatingEntryRequest,
     request: Request,
-) -> MoodEntry:
+) -> RatingEntry:
     try:
         return get_action_service(request).confirm_entry(action_id, entry_id, payload)
     except (
@@ -228,16 +229,16 @@ def confirm_mood_entry(
         ActionValidationError,
         ActionStorageError,
     ) as error:
-        _raise_action_error(error, event="mood_entry_confirm_failed")
+        _raise_action_error(error, event="rating_entry_confirm_failed")
 
 
-@router.patch("/actions/{action_id}/entries/{entry_id}", response_model=MoodEntry)
-def amend_mood_entry(
+@router.patch("/actions/{action_id}/entries/{entry_id}", response_model=RatingEntry)
+def amend_rating_entry(
     action_id: UUID,
     entry_id: UUID,
-    payload: AmendMoodEntryRequest,
+    payload: AmendRatingEntryRequest,
     request: Request,
-) -> MoodEntry:
+) -> RatingEntry:
     try:
         return get_action_service(request).amend_entry(action_id, entry_id, payload)
     except (
@@ -246,28 +247,28 @@ def amend_mood_entry(
         ActionValidationError,
         ActionStorageError,
     ) as error:
-        _raise_action_error(error, event="mood_entry_amend_failed")
+        _raise_action_error(error, event="rating_entry_amend_failed")
 
 
 @router.delete(
     "/actions/{action_id}/entries/{entry_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def delete_mood_entry(action_id: UUID, entry_id: UUID, request: Request) -> Response:
+def delete_rating_entry(action_id: UUID, entry_id: UUID, request: Request) -> Response:
     try:
         get_action_service(request).delete_entry(action_id, entry_id)
     except (ActionNotFoundError, ActionStorageError) as error:
-        _raise_action_error(error, event="mood_entry_delete_failed")
+        _raise_action_error(error, event="rating_entry_delete_failed")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/actions/{action_id}/entries", response_model=MoodEntryListResponse)
-def list_mood_entries(
+@router.get("/actions/{action_id}/entries", response_model=RatingEntryListResponse)
+def list_rating_entries(
     action_id: UUID,
     request: Request,
     date_from: Annotated[date | None, Query(alias="from")] = None,
     date_to: Annotated[date | None, Query(alias="to")] = None,
-) -> MoodEntryListResponse:
+) -> RatingEntryListResponse:
     if date_from and date_to and date_to < date_from:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -276,23 +277,23 @@ def list_mood_entries(
     try:
         entries = get_action_service(request).list_entries(action_id, date_from, date_to)
     except (ActionNotFoundError, ActionStorageError) as error:
-        _raise_action_error(error, event="mood_entries_list_failed")
-    return MoodEntryListResponse(entries=entries)
+        _raise_action_error(error, event="rating_entries_list_failed")
+    return RatingEntryListResponse(entries=entries)
 
 
-@router.post("/actions/{action_id}/entries/export", response_model=MoodEntryExportResponse)
-def export_mood_entries(
+@router.post("/actions/{action_id}/entries/export", response_model=RatingEntryExportResponse)
+def export_rating_entries(
     action_id: UUID,
-    payload: MoodEntryExportRequest,
+    payload: RatingEntryExportRequest,
     request: Request,
-) -> MoodEntryExportResponse:
+) -> RatingEntryExportResponse:
     try:
         service = get_action_service(request)
         action = service.load_action(action_id)
         entries = service.export_entries(action_id, payload.entry_ids)
     except (ActionNotFoundError, ActionValidationError, ActionStorageError) as error:
-        _raise_action_error(error, event="mood_entries_export_failed")
-    return MoodEntryExportResponse(
+        _raise_action_error(error, event="rating_entries_export_failed")
+    return RatingEntryExportResponse(
         action=action,
         entries=entries,
         exported_at=datetime.now(UTC),

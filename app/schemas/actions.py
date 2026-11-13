@@ -1,14 +1,15 @@
 from datetime import UTC, date, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, model_validator
 
-from app.schemas.session_insights import RecordMoodConfiguration, StrictModel
+from app.schemas.session_insights import RecordRatingConfiguration, StrictModel
+from app.services.rating_metrics import RatingMetric, get_rating_metric
 
 
-class RecordMoodActionSettings(StrictModel):
+class RecordRatingActionSettings(StrictModel):
     exact_task: str = Field(min_length=1, max_length=1000)
     frequency: str = Field(min_length=1, max_length=200)
     timing: str | None = Field(default=None, max_length=200)
@@ -23,10 +24,10 @@ class RecordMoodActionSettings(StrictModel):
     )
     preferred_time_zone: str | None = Field(default=None, min_length=1, max_length=120)
     schedule_origin: Literal["moodi_default", "user_selected"] = "moodi_default"
-    configuration: RecordMoodConfiguration
+    configuration: RecordRatingConfiguration
 
     @model_validator(mode="after")
-    def validate_date_range(self) -> "RecordMoodActionSettings":
+    def validate_date_range(self) -> "RecordRatingActionSettings":
         if (self.preferred_check_in_time is None) != (self.preferred_time_zone is None):
             raise ValueError("Preferred check-in time and timezone must be supplied together")
         if self.preferred_time_zone is not None:
@@ -51,28 +52,49 @@ class RecordMoodActionSettings(StrictModel):
         return self
 
 
-class MoodAction(StrictModel):
+class RatingAction(StrictModel):
     id: UUID
-    type: Literal["record_mood"]
+    type: Literal["record_rating"]
+    metric: RatingMetric
     state: Literal["active", "paused", "superseded"]
     recording_id: UUID
     transcript_version: str
     candidate_id: str
     source_ids: list[str]
     source_excerpt: str
-    settings: RecordMoodActionSettings
+    settings: RecordRatingActionSettings
     created_at: datetime
     revision: int = Field(ge=1)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_mood_action(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        if migrated.get("type") == "record_mood":
+            migrated["type"] = "record_rating"
+        migrated.setdefault("metric", "mood")
+        return migrated
 
-class MoodCandidateReviewRequest(StrictModel):
+    @model_validator(mode="after")
+    def validate_metric_configuration(self) -> "RatingAction":
+        scale = self.settings.configuration.scale
+        if scale is not None:
+            definition = get_rating_metric(self.metric)
+            if scale.construct_name != definition.construct or scale.id != definition.scale_id:
+                raise ValueError("Rating Action scale does not match its metric")
+        return self
+
+
+class RatingCandidateReviewRequest(StrictModel):
     draft_id: str
     source_version: str
     disposition: Literal["activate", "reject"]
-    settings: RecordMoodActionSettings | None = None
+    settings: RecordRatingActionSettings | None = None
 
     @model_validator(mode="after")
-    def validate_disposition(self) -> "MoodCandidateReviewRequest":
+    def validate_disposition(self) -> "RatingCandidateReviewRequest":
         if self.disposition == "activate" and self.settings is None:
             raise ValueError("Activation requires reviewed settings")
         if self.disposition == "reject" and self.settings is not None:
@@ -80,17 +102,17 @@ class MoodCandidateReviewRequest(StrictModel):
         return self
 
 
-class MoodCandidateReviewResponse(StrictModel):
+class RatingCandidateReviewResponse(StrictModel):
     recording_id: UUID
     candidate_id: str
     draft_id: str
     source_version: str
     disposition: Literal["activated", "linked_existing", "rejected"]
     reviewed_at: datetime
-    action: MoodAction | None
+    action: RatingAction | None
 
 
-class MoodCandidateResolutionResponse(StrictModel):
+class RatingCandidateResolutionResponse(StrictModel):
     recording_id: UUID
     candidate_id: str
     draft_id: str
@@ -103,85 +125,97 @@ class MoodCandidateResolutionResponse(StrictModel):
         "rejected",
         "conflict",
     ]
-    action: MoodAction | None
+    action: RatingAction | None
     reason: Literal["incompatible_ongoing_action"] | None = None
 
 
-class MoodEntryValues(StrictModel):
+class RatingEntryValues(StrictModel):
     relevant_date: date
     entry_time: datetime
     timezone_offset_minutes: int = Field(ge=-840, le=840)
     day_key: date
-    mood_value: int | None = Field(default=None, ge=0, le=10)
-    mood_label: str | None = Field(default=None, min_length=1, max_length=120)
+    rating_value: int | None = Field(default=None, ge=0, le=10)
+    rating_label: str | None = Field(default=None, min_length=1, max_length=120)
     context: str | None = Field(default=None, min_length=1, max_length=2000)
     scale_id: str | None = Field(default=None, min_length=1, max_length=120)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_mood_values(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        if "mood_value" in migrated and "rating_value" not in migrated:
+            migrated["rating_value"] = migrated.pop("mood_value")
+        if "mood_label" in migrated and "rating_label" not in migrated:
+            migrated["rating_label"] = migrated.pop("mood_label")
+        return migrated
+
     @model_validator(mode="after")
-    def validate_captured_date(self) -> "MoodEntryValues":
+    def validate_captured_date(self) -> "RatingEntryValues":
         if self.entry_time.tzinfo is None or self.entry_time.utcoffset() is None:
             raise ValueError("Entry time must include a timezone offset")
         captured = self.entry_time.astimezone(UTC) + timedelta(minutes=self.timezone_offset_minutes)
         if captured.date() != self.day_key or self.relevant_date != self.day_key:
             raise ValueError("Day key must match entry time, captured offset, and relevant date")
-        if self.mood_value is not None and self.mood_label is not None:
-            raise ValueError("An entry cannot contain both a mood rating and mood label")
-        if self.mood_value is None and self.scale_id is not None:
-            raise ValueError("Scale metadata requires a numeric mood rating")
-        if self.mood_value is not None and self.scale_id is None:
-            raise ValueError("Numeric mood rating requires scale metadata")
+        if self.rating_value is not None and self.rating_label is not None:
+            raise ValueError("An entry cannot contain both a numeric rating and rating label")
+        if self.rating_value is None and self.scale_id is not None:
+            raise ValueError("Scale metadata requires a numeric rating")
+        if self.rating_value is not None and self.scale_id is None:
+            raise ValueError("Numeric rating requires scale metadata")
         return self
 
 
-class SaveMoodEntryDraftRequest(StrictModel):
-    values: MoodEntryValues
+class SaveRatingEntryDraftRequest(StrictModel):
+    values: RatingEntryValues
     expected_revision: int | None = Field(default=None, ge=1)
 
 
-class ConfirmMoodEntryRequest(StrictModel):
-    values: MoodEntryValues
+class ConfirmRatingEntryRequest(StrictModel):
+    values: RatingEntryValues
     expected_revision: int | None = Field(default=None, ge=1)
     idempotency_key: str = Field(min_length=1, max_length=120)
 
 
-class AmendMoodEntryRequest(StrictModel):
-    values: MoodEntryValues
+class AmendRatingEntryRequest(StrictModel):
+    values: RatingEntryValues
     expected_revision: int = Field(ge=1)
 
 
-class MoodEntryRevision(StrictModel):
+class RatingEntryRevision(StrictModel):
     revision: int = Field(ge=1)
-    values: MoodEntryValues
+    values: RatingEntryValues
     status: Literal["draft", "confirmed"]
     changed_at: datetime
 
 
-class MoodEntry(StrictModel):
+class RatingEntry(StrictModel):
     id: UUID
     action_id: UUID
     status: Literal["draft", "confirmed"]
-    values: MoodEntryValues
+    values: RatingEntryValues
     revision: int = Field(ge=1)
-    revision_history: list[MoodEntryRevision]
+    revision_history: list[RatingEntryRevision]
     idempotency_key: str | None
     created_at: datetime
     updated_at: datetime
     confirmed_at: datetime | None
 
 
-class MoodActionListResponse(StrictModel):
-    actions: list[MoodAction]
+class RatingActionListResponse(StrictModel):
+    actions: list[RatingAction]
 
 
-class MoodEntryListResponse(StrictModel):
-    entries: list[MoodEntry]
+class RatingEntryListResponse(StrictModel):
+    entries: list[RatingEntry]
 
 
-class MoodEntryExportRequest(StrictModel):
+class RatingEntryExportRequest(StrictModel):
     entry_ids: list[UUID] = Field(min_length=1, max_length=500)
 
 
-class MoodEntryExportResponse(StrictModel):
-    action: MoodAction
-    entries: list[MoodEntry]
+class RatingEntryExportResponse(StrictModel):
+    action: RatingAction
+    entries: list[RatingEntry]
     exported_at: datetime

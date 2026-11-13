@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.services.rating_metrics import RatingConstruct, RatingMetric, get_rating_metric
+
 type InsightVariant = Literal["P01", "P02", "P03"]
 type InsightSectionKey = Literal[
     "today_focus",
@@ -40,11 +42,11 @@ class InsightFact(StrictModel):
     source_ids: list[str]
 
 
-class MoodScaleDefinition(StrictModel):
+class RatingScaleDefinition(StrictModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
 
     id: str = Field(min_length=1, max_length=120)
-    construct_name: Literal["overall_day_mood"] = Field(alias="construct")
+    construct_name: RatingConstruct = Field(alias="construct")
     minimum: Literal[0]
     maximum: Literal[10]
     minimum_label: str = Field(min_length=1, max_length=80)
@@ -53,30 +55,31 @@ class MoodScaleDefinition(StrictModel):
     version: str = Field(min_length=1, max_length=40)
 
 
-class RecordMoodConfiguration(StrictModel):
+class RecordRatingConfiguration(StrictModel):
     input_kind: Literal["numeric_0_10", "label"]
     context_enabled: bool = False
-    scale: MoodScaleDefinition | None = None
+    scale: RatingScaleDefinition | None = None
     scale_origin: Literal["session", "moodi_default"] | None = None
 
     @model_validator(mode="after")
-    def validate_scale(self) -> "RecordMoodConfiguration":
+    def validate_scale(self) -> "RecordRatingConfiguration":
         if self.input_kind == "numeric_0_10" and self.scale is None:
-            raise ValueError("Numeric mood configuration requires scale metadata")
+            raise ValueError("Numeric rating configuration requires scale metadata")
         if self.input_kind == "numeric_0_10" and self.scale_origin is None:
             self.scale_origin = "session"
         if self.input_kind == "label" and self.scale is not None:
-            raise ValueError("Label mood configuration cannot include a numeric scale")
+            raise ValueError("Label rating configuration cannot include a numeric scale")
         if self.input_kind == "label" and self.scale_origin is not None:
-            raise ValueError("Label mood configuration cannot include a scale origin")
+            raise ValueError("Label rating configuration cannot include a scale origin")
         return self
 
 
-class RecordMoodCandidate(StrictModel):
+class RecordRatingCandidate(StrictModel):
     id: str
-    type: Literal["record_mood"]
+    type: Literal["record_rating"]
     state: Literal["review_ready"]
     actor: Literal["client"]
+    metric: RatingMetric
     exact_task: str
     source_excerpt: str
     frequency: str | None
@@ -85,19 +88,26 @@ class RecordMoodCandidate(StrictModel):
     start_date: date | None
     end_date: date | None
     duration_days: Literal[14] = 14
-    configuration: RecordMoodConfiguration | None
+    configuration: RecordRatingConfiguration | None
     unknowns: list[str]
     source_ids: list[str]
 
     @model_validator(mode="after")
-    def validate_review_state(self) -> "RecordMoodCandidate":
+    def validate_review_state(self) -> "RecordRatingCandidate":
         if self.state == "review_ready" and (
             self.configuration is None
             or not self.frequency
             or not self.reference_period
             or self.unknowns
         ):
-            raise ValueError("Review-ready mood candidate is incomplete")
+            raise ValueError("Review-ready rating candidate is incomplete")
+        if self.configuration is not None and self.configuration.scale is not None:
+            definition = get_rating_metric(self.metric)
+            if (
+                self.configuration.scale.construct_name != definition.construct
+                or self.configuration.scale.id != definition.scale_id
+            ):
+                raise ValueError("Rating candidate scale does not match its metric")
         return self
 
 
@@ -147,7 +157,7 @@ class SessionInsightsResult(StrictModel):
     secondary_variant: InsightVariant | None
     selection_note: str | None
     facts: list[InsightFact]
-    action_candidates: list[RecordMoodCandidate]
+    action_candidates: list[RecordRatingCandidate]
     sections: list[InsightSection]
     review_flags: list[InsightReviewFlag]
 
@@ -171,7 +181,7 @@ class SessionInsightsDraftResult(StrictModel):
     secondary_variant: InsightVariant | None
     selection_note: str | None
     facts: list[InsightFact]
-    action_candidates: list[RecordMoodCandidate]
+    action_candidates: list[RecordRatingCandidate]
     sections: list[InsightDraftSection]
     review_flags: list[InsightReviewFlag]
 

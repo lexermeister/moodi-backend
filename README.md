@@ -33,7 +33,8 @@ worker, reminders, or clinical-record integration.
 - Atomic local transcript JSON storage.
 - `POST /recordings/{recording_id}/insights` for evidence-linked session insights.
 - `GET` and `PUT /recordings/{recording_id}/insights/review` for a separate client-reviewed layer.
-- Reviewable Record mood Actions with dated drafts, confirmed entries, history, export, and
+- Reviewable Record rating Actions for mood, motivation, and sleep quality, with dated drafts,
+  confirmed entries, history, export, and
   permanent cascade deletion.
 - Idempotent transcript and insight generation backed by versioned local artifacts.
 - Application-side validation of model-generated evidence and cross references.
@@ -344,14 +345,20 @@ as transcript-backed wording. The reviewed layer is atomically saved as
 `<uuid>.insights-review.json`. A stale draft or source version returns `409` instead of silently
 applying edits to regenerated insights.
 
-### Review and activate Record mood Actions
+### Review and activate Record rating Actions
+
+The insight generator may propose a Record rating candidate from a clear first-person future
+intention such as “I would like to track my sleep quality”; separate therapist confirmation is not
+required for that client-stated plan. Uncertain ideas, general discussion, past tracking, declined
+plans, and therapist suggestions without client assent do not produce candidates. A candidate is
+only a reviewable draft and never activates an Action by itself.
 
 ```http
 PUT /recordings/{recording_id}/action-candidates/{candidate_id}/review
 ```
 
 An activation request carries the reviewed Action settings. The task, cadence, reference period,
-and mood configuration must still match the generated candidate, while the patient may choose an
+rating metric and configuration must still match the generated candidate, while the patient may choose an
 exact local check-in time and timezone plus either a fixed 1–365 day duration or an `ongoing`
 schedule with no end date. The exact time is a stored logistical preference; this service does not
 schedule notifications. Fixed schedules receive an inclusive end date, while ongoing Actions stay
@@ -363,8 +370,9 @@ Before setup, the mobile app resolves a candidate with:
 GET /recordings/{recording_id}/action-candidates/{candidate_id}/resolution
 ```
 
-Only one active ongoing Record mood Action is created for the current single-subject backend. When
-a compatible candidate from a later session is activated, its review is stored as
+Only one active ongoing Record rating Action per metric is created for the current single-subject
+backend. Mood, motivation, and sleep-quality Actions may coexist. When a compatible candidate for
+the same metric from a later session is activated, its review is stored as
 `linked_existing` and points to the earlier Action. The earlier Action's schedule, source fields,
 entries, and history are not changed. If the candidate's clinical tracking configuration differs,
 resolution returns `conflict` and activation returns HTTP `409` rather than creating or modifying an
@@ -374,11 +382,15 @@ This milestone has no user identity or authentication, so the uniqueness scope i
 backend installation. A shared multi-user deployment must add an owner identifier and scope the
 constraint by owner before using this behavior for different people.
 
-Record mood entries support draft, confirmation, correction history, deletion, and selected-entry
+Record rating entries support draft, confirmation, correction history, deletion, and selected-entry
 export under `/actions/{action_id}/entries`. Entries before the Action start date, or after a fixed
 Action's end date, are rejected.
 
-### Permanently delete a Record mood Action
+All three metrics use an integer 0–10 range but retain separate versioned scale IDs and constructs:
+`overall-day-mood-0-10-v1`, `motivation-0-10-v1`, and `sleep-quality-0-10-v1`. A sleep-quality
+rating is a single scalar check-in and is not the future multi-field sleep-diary Action.
+
+### Permanently delete a Record rating Action
 
 ```http
 DELETE /actions/{action_id}
@@ -387,7 +399,7 @@ DELETE /actions/{action_id}
 A successful deletion returns HTTP `204` with no response body. It permanently removes:
 
 - the Action record;
-- every confirmed mood entry and saved draft belonging to that Action;
+- every confirmed rating entry and saved draft belonging to that Action;
 - the entries' stored revision history; and
 - every candidate-review record linked to the Action.
 

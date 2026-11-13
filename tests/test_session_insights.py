@@ -14,11 +14,12 @@ from app.schemas.session_insights import (
     InsightBullet,
     InsightFact,
     InsightSection,
-    MoodScaleDefinition,
-    RecordMoodCandidate,
-    RecordMoodConfiguration,
+    RatingScaleDefinition,
+    RecordRatingCandidate,
+    RecordRatingConfiguration,
     SessionInsightsResult,
 )
+from app.services.rating_metrics import RatingMetric, get_rating_metric
 from app.services.transcription import RoleAttributionDecision
 
 
@@ -45,13 +46,15 @@ class FakeResponses:
         *,
         invalid_insights_count: int = 0,
         invalid_bullet_references: bool = False,
-        record_mood_candidate: bool = False,
+        record_rating_candidate: bool = False,
+        rating_metric: RatingMetric = "mood",
         inexact_candidate_excerpt: bool = False,
         insights_error: Exception | None = None,
     ) -> None:
         self.invalid_insights_count = invalid_insights_count
         self.invalid_bullet_references = invalid_bullet_references
-        self.record_mood_candidate = record_mood_candidate
+        self.record_rating_candidate = record_rating_candidate
+        self.rating_metric = rating_metric
         self.inexact_candidate_excerpt = inexact_candidate_excerpt
         self.insights_error = insights_error
         self.calls: list[dict[str, Any]] = []
@@ -72,6 +75,7 @@ class FakeResponses:
 
         input_data = json.loads(kwargs["input"][1]["content"].split("\n", 1)[1])
         source_id = "S999" if self.insights_call_count <= self.invalid_insights_count else "S2"
+        metric = get_rating_metric(self.rating_metric)
         return SimpleNamespace(
             output_parsed=SessionInsightsResult(
                 session_id=input_data["session_id"],
@@ -91,12 +95,13 @@ class FakeResponses:
                 ],
                 action_candidates=(
                     [
-                        RecordMoodCandidate(
+                        RecordRatingCandidate(
                             id="C1",
-                            type="record_mood",
+                            type="record_rating",
                             state="review_ready",
                             actor="client",
-                            exact_task="Record mood",
+                            metric=metric.metric,
+                            exact_task=f"Record {metric.display_name.lower()}",
                             source_excerpt=(
                                 "A paraphrase that is not in the transcript."
                                 if self.inexact_candidate_excerpt
@@ -104,21 +109,21 @@ class FakeResponses:
                             ),
                             frequency="once daily",
                             timing="evening",
-                            reference_period="whole day",
+                            reference_period=metric.reference_period,
                             start_date="2026-11-10",
                             end_date="2026-11-23",
                             duration_days=14,
-                            configuration=RecordMoodConfiguration(
+                            configuration=RecordRatingConfiguration(
                                 input_kind="numeric_0_10",
                                 context_enabled=False,
                                 scale_origin="moodi_default",
-                                scale=MoodScaleDefinition(
-                                    id="overall-day-mood-0-10-v1",
-                                    construct="overall_day_mood",
+                                scale=RatingScaleDefinition(
+                                    id=metric.scale_id,
+                                    construct=metric.construct,
                                     minimum=0,
                                     maximum=10,
-                                    minimum_label="worst",
-                                    maximum_label="best",
+                                    minimum_label=metric.minimum_label,
+                                    maximum_label=metric.maximum_label,
                                     direction="low_to_high",
                                     version="1",
                                 ),
@@ -127,7 +132,7 @@ class FakeResponses:
                             source_ids=["S2"],
                         )
                     ]
-                    if self.record_mood_candidate or self.inexact_candidate_excerpt
+                    if self.record_rating_candidate or self.inexact_candidate_excerpt
                     else []
                 ),
                 sections=[
@@ -156,7 +161,8 @@ class FakeOpenAIClient:
         *,
         invalid_insights_count: int = 0,
         invalid_bullet_references: bool = False,
-        record_mood_candidate: bool = False,
+        record_rating_candidate: bool = False,
+        rating_metric: RatingMetric = "mood",
         inexact_candidate_excerpt: bool = False,
         insights_error: Exception | None = None,
     ) -> None:
@@ -165,7 +171,8 @@ class FakeOpenAIClient:
         self.responses = FakeResponses(
             invalid_insights_count=invalid_insights_count,
             invalid_bullet_references=invalid_bullet_references,
-            record_mood_candidate=record_mood_candidate,
+            record_rating_candidate=record_rating_candidate,
+            rating_metric=rating_metric,
             inexact_candidate_excerpt=inexact_candidate_excerpt,
             insights_error=insights_error,
         )
@@ -245,7 +252,7 @@ def test_insights_are_structured_saved_and_cached(
     assert payload["recording_id"] == recording["id"]
     assert payload["draft_id"].startswith("sha256:")
     assert payload["source_version"].startswith("sha256:")
-    assert payload["prompt_version"] == "v0.4.2"
+    assert payload["prompt_version"] == "v0.4.4"
     assert payload["model"] == "gpt-6-luna"
     assert payload["result"]["status"] == "draft"
     assert payload["result"]["sections"][0]["heading"] == "Today's focus"
@@ -296,6 +303,67 @@ def test_invalid_evidence_is_regenerated_once(
     assert response.json()["result"]["facts"][0]["source_ids"] == ["S2"]
 
 
+@pytest.mark.parametrize(
+    ("metric", "construct", "scale_id", "reference_period"),
+    [
+        ("mood", "overall_day_mood", "overall-day-mood-0-10-v1", "whole day"),
+        ("motivation", "daily_motivation", "motivation-0-10-v1", "whole day"),
+        ("sleep_quality", "sleep_quality", "sleep-quality-0-10-v1", "previous night"),
+    ],
+)
+def test_rating_candidates_preserve_metric_specific_scale(
+    recordings_dir: Path,
+    metric: RatingMetric,
+    construct: str,
+    scale_id: str,
+    reference_period: str,
+) -> None:
+    fake_openai = FakeOpenAIClient(record_rating_candidate=True, rating_metric=metric)
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording = upload_recording(client)
+        assert client.post(f"/recordings/{recording['id']}/transcription").status_code == 200
+        response = client.post(f"/recordings/{recording['id']}/insights", json={})
+
+    assert response.status_code == 200
+    candidate = response.json()["result"]["action_candidates"][0]
+    assert candidate["type"] == "record_rating"
+    assert candidate["metric"] == metric
+    assert candidate["reference_period"] == reference_period
+    assert candidate["configuration"]["scale"]["construct"] == construct
+    assert candidate["configuration"]["scale"]["id"] == scale_id
+
+
+def test_prompt_accepts_clear_client_intent_but_preserves_exclusions() -> None:
+    prompt = (
+        Path(__file__).parents[1] / "app" / "prompts" / "session_insights_v0_4.txt"
+    ).read_text(encoding="utf-8")
+    normalized_prompt = " ".join(prompt.split())
+
+    for supported_example in (
+        "I want to track my sleep quality",
+        "I would like to track my motivation",
+        "I plan to record my mood",
+        "I've decided to track my sleep",
+        "I will record my mood each evening",
+    ):
+        assert supported_example in normalized_prompt
+
+    for excluded_example in (
+        "Maybe I should track sleep",
+        "I could track my mood",
+        "We discussed tracking motivation",
+        "I used to track sleep",
+    ):
+        assert excluded_example in normalized_prompt
+
+    assert (
+        "A clear intention is sufficient even without a separate therapist confirmation"
+        in normalized_prompt
+    )
+    assert "The candidate remains a reviewable draft" in normalized_prompt
+    assert "A therapist suggestion still requires client assent" in normalized_prompt
+
+
 def test_stale_prompt_cache_is_regenerated(
     insights_client: TestClient,
     recordings_dir: Path,
@@ -315,7 +383,7 @@ def test_stale_prompt_cache_is_regenerated(
     regenerated = insights_client.post(endpoint, json={})
 
     assert regenerated.status_code == 200
-    assert regenerated.json()["prompt_version"] == "v0.4.2"
+    assert regenerated.json()["prompt_version"] == "v0.4.4"
     assert fake_openai.responses.insights_call_count == 2
 
 
