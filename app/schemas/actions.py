@@ -5,9 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, model_validator
 
-from app.schemas.session_insights import RecordMoodConfiguration, StrictModel
-
-type MoodMeasurement = Literal["mood", "energy", "sleep_quality", "motivation"]
+from app.schemas.session_insights import MoodMeasurement, RecordMoodConfiguration, StrictModel
 
 
 class RecordMoodActionSettings(StrictModel):
@@ -18,7 +16,7 @@ class RecordMoodActionSettings(StrictModel):
     reference_period: str = Field(min_length=1, max_length=200)
     start_date: date | None = None
     end_date: date | None = None
-    duration_kind: Literal["fixed", "ongoing"] = "fixed"
+    duration_kind: Literal["fixed", "ongoing", "unscheduled"] = "fixed"
     duration_days: int | None = Field(default=14, ge=1, le=365)
     preferred_check_in_time: str | None = Field(
         default=None,
@@ -34,6 +32,19 @@ class RecordMoodActionSettings(StrictModel):
             raise ValueError("Record mood must include mood")
         if len(set(self.what_to_record)) != len(self.what_to_record):
             raise ValueError("Measurements must be unique")
+        if self.duration_kind == "unscheduled":
+            if any(
+                value is not None
+                for value in (
+                    self.start_date,
+                    self.end_date,
+                    self.duration_days,
+                    self.preferred_check_in_time,
+                    self.preferred_time_zone,
+                )
+            ):
+                raise ValueError("Unscheduled actions cannot have dates, durations, or reminders")
+            return self
         if (self.preferred_check_in_time is None) != (self.preferred_time_zone is None):
             raise ValueError("Preferred check-in time and timezone must be supplied together")
         if self.preferred_time_zone is not None:

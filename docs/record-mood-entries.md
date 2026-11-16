@@ -10,7 +10,28 @@ Supply `settings.what_to_record` when activating a reviewed candidate. It defaul
 `motivation`. Mood is required and duplicates are rejected. Existing stored actions
 without this field receive the default when read. Linking to an ongoing action with
 different measurements returns a conflict rather than silently losing the selection.
-Session extraction and the setup interface will be updated in a later stage.
+Session extraction and the setup interface now support this selection (Stage 2).
+
+## Session extraction and setup (Stage 2)
+
+Prompt v0.5.0 produces at most one combined candidate. Mood and Energy are defaults;
+Sleep quality and Motivation require explicit tracking agreement in the cited session.
+The user can review all four choices before activation, with Mood required. Candidate
+`what_to_record` defaults preserve readability of older saved mood candidates.
+
+The new mobile setup sends `duration_kind: "unscheduled"` with null dates, duration,
+and preferred check-in time/timezone. There is no implicit 14-day expiry. Candidate
+`duration_days` remains a legacy schema field and is not applied by this setup.
+Existing fixed and ongoing actions remain supported. A compatible active ongoing or
+unscheduled action is linked rather than duplicated; differing measurements return
+a conflict. Users can select the existing measurements to link the session, without
+changing the original action. Repeating activation with changed measurements also
+returns a conflict.
+
+Mobile parsers now use backend `record_mood`, `mood_value`, and `mood_label` fields.
+Earlier on-device `record_rating` session summaries remain readable, with a notice
+to regenerate the summary before using the new setup. The old scheduling setup card
+has been replaced. Entry wizard and Today/Journey changes remain subsequent stages.
 
 ## Entry values
 
@@ -49,6 +70,5 @@ only confirmed entries. Saves use the existing atomic filesystem storage; mutati
 are serialized within one service process. Multi-process storage coordination is not
 provided by this filesystem backend.
 
-Legacy scheduling and scale fields remain supported for current clients; this stage
-does not add scheduling or alter insight extraction. The new mobile wizard is a
-subsequent stage.
+Legacy scheduling and scale fields remain supported for current clients. The new
+mobile entry wizard is a subsequent stage.

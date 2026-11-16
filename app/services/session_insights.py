@@ -20,7 +20,7 @@ from app.schemas.session_insights import (
 )
 from app.services.transcript_store import TranscriptStore
 
-SESSION_INSIGHTS_PROMPT_VERSION = "v0.4.2"
+SESSION_INSIGHTS_PROMPT_VERSION = "v0.5.0"
 MAX_GENERATION_ATTEMPTS = 2
 logger = get_logger("services.session_insights")
 
@@ -301,6 +301,11 @@ class SessionInsightsService:
         segments_by_id = {segment["id"]: segment["text"] for segment in segments}
 
         fact_ids = [fact.id for fact in result.facts]
+        if len(result.action_candidates) > 1:
+            raise InsightsValidationError(
+                "Only one combined Record mood candidate is supported",
+                reason="multiple_mood_candidates",
+            )
         candidate_ids = [candidate.id for candidate in result.action_candidates]
         if len(fact_ids) != len(set(fact_ids)) or any(
             re.fullmatch(r"F\d+", identifier) is None for identifier in fact_ids

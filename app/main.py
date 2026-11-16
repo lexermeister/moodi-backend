@@ -61,7 +61,7 @@ def create_app(
             directory=application_settings.recordings_path,
             transcript_store=transcript_store,
             generator=insights_generator,
-            prompt_path=Path(__file__).resolve().parent / "prompts" / "session_insights_v0_4.txt",
+            prompt_path=Path(__file__).resolve().parent / "prompts" / "session_insights_v0_5.txt",
         )
         application.state.session_insights_review_service = SessionInsightsReviewService(
             directory=application_settings.recordings_path,

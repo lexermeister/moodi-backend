@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 type InsightVariant = Literal["P01", "P02", "P03"]
+type MoodMeasurement = Literal["mood", "energy", "sleep_quality", "motivation"]
 type InsightSectionKey = Literal[
     "today_focus",
     "key_takeaways",
@@ -73,6 +74,7 @@ class RecordMoodConfiguration(StrictModel):
 
 
 class RecordMoodCandidate(StrictModel):
+    what_to_record: list[MoodMeasurement] = Field(default_factory=lambda: ["mood", "energy"])
     id: str
     type: Literal["record_mood"]
     state: Literal["review_ready"]
@@ -91,6 +93,10 @@ class RecordMoodCandidate(StrictModel):
 
     @model_validator(mode="after")
     def validate_review_state(self) -> "RecordMoodCandidate":
+        if not {"mood", "energy"} <= set(self.what_to_record):
+            raise ValueError("Suggested measurements must include Mood and Energy defaults")
+        if len(set(self.what_to_record)) != len(self.what_to_record):
+            raise ValueError("Suggested measurements must be unique")
         if self.state == "review_ready" and (
             self.configuration is None
             or not self.frequency

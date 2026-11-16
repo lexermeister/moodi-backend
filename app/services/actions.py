@@ -113,6 +113,16 @@ class ActionService:
             )
             if existing.disposition not in requested_dispositions:
                 raise ActionConflictError("The candidate has already been reviewed")
+            if (
+                request.disposition == "activate"
+                and existing.action is not None
+                and request.settings is not None
+                and set(request.settings.what_to_record)
+                != set(existing.action.settings.what_to_record)
+            ):
+                raise ActionConflictError(
+                    "This candidate was activated with different measurements"
+                )
             return existing
 
         reviewed_at = datetime.now(UTC)
@@ -125,8 +135,12 @@ class ActionService:
                     "Activation requires reviewed settings",
                     reason="missing_reviewed_settings",
                 )
-            start_date = settings.start_date or reviewed_at.date()
-            if settings.duration_kind == "ongoing":
+            start_date = (
+                None
+                if settings.duration_kind == "unscheduled"
+                else settings.start_date or reviewed_at.date()
+            )
+            if settings.duration_kind in ("ongoing", "unscheduled"):
                 end_date = None
             else:
                 if settings.duration_days is None:
@@ -147,11 +161,11 @@ class ActionService:
             self._validate_reviewed_settings(candidate, settings)
             ongoing_action = self._find_active_ongoing_action()
             if ongoing_action is not None:
-                if not self._candidate_matches_action(candidate, ongoing_action) or set(
-                    settings.what_to_record
-                ) != set(ongoing_action.settings.what_to_record):
+                if not self._candidate_matches_action(
+                    candidate, ongoing_action, measurements=settings.what_to_record
+                ):
                     raise ActionConflictError(
-                        "An active ongoing mood Action already has different settings"
+                        "An active Record mood Action already has different settings"
                     )
                 action = ongoing_action
                 review_disposition = "linked_existing"
@@ -519,7 +533,7 @@ class ActionService:
             or candidate.configuration != settings.configuration
         ):
             raise ActionValidationError(
-                "Only the Action schedule can be changed before activation",
+                "Only measurements and schedule can be changed before activation",
                 reason="clinical_settings_changed",
             )
 
@@ -670,7 +684,7 @@ class ActionService:
                 for action in self.list_actions()
                 if action.type == "record_mood"
                 and action.state == "active"
-                and action.settings.duration_kind == "ongoing"
+                and action.settings.duration_kind in ("ongoing", "unscheduled")
             ),
             None,
         )
@@ -679,6 +693,8 @@ class ActionService:
     def _candidate_matches_action(
         candidate: RecordMoodCandidate,
         action: MoodAction,
+        *,
+        measurements: list[str] | None = None,
     ) -> bool:
         candidate_configuration = candidate.configuration
         action_configuration = action.settings.configuration
@@ -687,11 +703,17 @@ class ActionService:
         candidate_scale = candidate_configuration.scale
         action_scale = action_configuration.scale
         return (
-            candidate.frequency == action.settings.frequency
-            and candidate.timing == action.settings.timing
+            set(measurements if measurements is not None else candidate.what_to_record)
+            == set(action.settings.what_to_record)
+            and (
+                action.settings.duration_kind == "unscheduled"
+                or (
+                    candidate.frequency == action.settings.frequency
+                    and candidate.timing == action.settings.timing
+                )
+            )
             and candidate.reference_period == action.settings.reference_period
             and candidate_configuration.input_kind == action_configuration.input_kind
-            and candidate_configuration.context_enabled == action_configuration.context_enabled
             and candidate_scale == action_scale
         )
 

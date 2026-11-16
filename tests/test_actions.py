@@ -116,6 +116,7 @@ def generate_candidate(client: TestClient) -> tuple[dict[str, Any], dict[str, An
 
 def reviewed_settings(candidate: dict[str, Any]) -> dict[str, Any]:
     return {
+        "what_to_record": candidate.get("what_to_record", ["mood", "energy"]),
         "exact_task": candidate["exact_task"],
         "frequency": candidate["frequency"],
         "timing": candidate["timing"],
@@ -421,7 +422,7 @@ def test_incompatible_ongoing_action_blocks_activation(recordings_dir: Path) -> 
         assert resolution.json()["action"]["id"] == action["id"]
         assert activation.status_code == 409
         assert activation.json() == {
-            "detail": "An active ongoing mood Action already has different settings"
+            "detail": "An active Record mood Action already has different settings"
         }
         assert len(client.get("/actions").json()["actions"]) == 1
 
@@ -446,7 +447,8 @@ def test_candidate_activation_rejects_clinical_setting_edits(recordings_dir: Pat
 
         assert response.status_code == 422
         assert (
-            response.json()["detail"] == "Only the Action schedule can be changed before activation"
+            response.json()["detail"]
+            == "Only measurements and schedule can be changed before activation"
         )
 
 
