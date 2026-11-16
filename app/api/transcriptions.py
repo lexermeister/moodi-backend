@@ -13,6 +13,7 @@ from app.services.transcription import (
     NoSpeechDetectedError,
     RecordingTooLargeForTranscriptionError,
     RoleAttributionProviderError,
+    TranscriptionFixtureError,
     TranscriptionNotConfiguredError,
     TranscriptionProviderError,
     TranscriptionService,
@@ -42,6 +43,9 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
     except RecordingNotFoundError as error:
         logger.warning("transcription_rejected recording_id=%s reason=not_found", recording_id)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except TranscriptionFixtureError as error:
+        logger.warning("transcription_fixture_failed recording_id=%s", recording_id)
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except RecordingTooLargeForTranscriptionError as error:
         logger.warning("transcription_rejected recording_id=%s reason=too_large", recording_id)
         raise HTTPException(

@@ -50,6 +50,7 @@ def create_app(
             model=application_settings.openai_transcription_model,
             role_model=application_settings.openai_role_attribution_model,
             client=transcription_client,
+            fixture_path=application_settings.fixture_path,
         )
         insights_generator = OpenAISessionInsightsGenerator(
             api_key=application_settings.openai_api_key,

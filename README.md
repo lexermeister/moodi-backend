@@ -677,3 +677,26 @@ session insight generation. These features are deliberately deferred:
 The next storage milestone should replace the local volume with object storage before introducing
 multiple replicas or production traffic.
 
+# Development transcript override
+
+Set `TRANSCRIPTION_FIXTURE_PATH=./data/dev-transcript.json` in `.env` and restart
+the backend to use an editable transcript instead of speech-to-text. Copy
+`examples/dev-transcript.json` to that path first. This mode requires
+`APP_ENV=development`.
+
+Edit the JSON `turns` list using `role` (`therapist` or `client`) and `text`.
+Both roles must appear and text must be non-empty. Record any short clip normally:
+upload stays unchanged, but transcription uses the file. The file is read again
+on every transcription request, including retries for the same recording. Edits
+need no restart. Existing transcripts stay unchanged until transcription is requested
+again. Changed text changes the insight source version, so stale insights are not reused.
+
+Insights and action extraction still use the configured model and API key. The
+fixture is marked `development-fixture` in transcript metadata. Missing/invalid
+files return an error without calling the transcription provider. Fixture text is
+never logged. The working file is ignored by Git; keep only fictional examples in
+the tracked example file.
+
+To restore normal transcription, remove or empty `TRANSCRIPTION_FIXTURE_PATH` and
+restart the backend. Tests disable the local override unless explicitly configured.
+

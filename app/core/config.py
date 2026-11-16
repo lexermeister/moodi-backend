@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +16,21 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    transcription_fixture_path: Path | None = None
+
+    @field_validator("transcription_fixture_path", mode="before")
+    @classmethod
+    def empty_fixture_disables_override(cls, value):
+        return None if value == "" else value
+
+    @property
+    def fixture_path(self) -> Path | None:
+        if self.transcription_fixture_path is None:
+            return None
+        if self.app_env != "development":
+            raise ValueError("Transcript fixtures are only available in development")
+        return (REPOSITORY_ROOT / self.transcription_fixture_path).resolve()
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     recordings_dir: Path = Path("./data/recordings")
     max_upload_mb: int = Field(default=100, gt=0)

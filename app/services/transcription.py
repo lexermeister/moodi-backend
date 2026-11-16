@@ -47,6 +47,10 @@ class TranscriptionNotConfiguredError(TranscriptionError):
     """Raised when no OpenAI API key is configured."""
 
 
+class TranscriptionFixtureError(TranscriptionError):
+    """Raised when the configured development fixture is unavailable or invalid."""
+
+
 class UnsupportedTranscriptionFormatError(TranscriptionError):
     """Raised when OpenAI does not support the saved recording format."""
 
@@ -274,14 +278,18 @@ class TranscriptionService:
         model: str,
         role_model: str,
         client: TranscriptionClient | None = None,
+        fixture_path: Path | None = None,
     ) -> None:
         self.transcript_store = transcript_store
         self.api_key = api_key
         self.model = model
         self.role_attributor = RoleAttributionService(role_model)
         self.client = client
+        self.fixture_path = fixture_path
 
     def transcribe(self, recording_id: UUID, recording_path: Path) -> CompletedTranscription:
+        if self.fixture_path is not None:
+            return self._transcribe_fixture(recording_id)
         existing = self.transcript_store.load(recording_id)
         if existing is not None:
             logger.info("transcription_cache_hit recording_id=%s", recording_id)
@@ -341,6 +349,49 @@ class TranscriptionService:
             completed_at=datetime.now(UTC),
         )
         self.transcript_store.save(completed)
+        return completed
+
+    def _transcribe_fixture(self, recording_id: UUID) -> CompletedTranscription:
+        try:
+            payload = json.loads(self.fixture_path.read_text(encoding="utf-8"))
+            raw_turns = payload["turns"]
+            if not isinstance(raw_turns, list) or not raw_turns:
+                raise ValueError()
+            turns = []
+            for turn in raw_turns:
+                role, text = turn["role"], turn["text"]
+                if (
+                    role not in ("therapist", "client")
+                    or not isinstance(text, str)
+                    or not text.strip()
+                ):
+                    raise ValueError()
+                turns.append(
+                    TranscriptTurn(
+                        source_speaker="speaker_1" if role == "therapist" else "speaker_2",
+                        role=role,
+                        text=text.strip(),
+                    )
+                )
+            if {turn.role for turn in turns} != {"therapist", "client"}:
+                raise ValueError()
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
+            raise TranscriptionFixtureError(
+                "Cannot load development transcript fixture. Check the configured JSON file: "
+                "turns must contain therapist and client roles with non-empty text."
+            ) from error
+        completed = CompletedTranscription(
+            recording_id=recording_id,
+            text=" ".join(turn.text for turn in turns),
+            turns=turns,
+            languages=[],
+            model="development-fixture",
+            role_model="development-fixture",
+            role_prompt_version="v1",
+            completed_at=datetime.now(UTC),
+        )
+        self.transcript_store.save(completed)
+        logger.info("transcription_fixture_used recording_id=%s", recording_id)
         return completed
 
     def _get_client(self) -> TranscriptionClient:

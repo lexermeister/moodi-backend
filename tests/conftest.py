@@ -8,6 +8,12 @@ from app.core.config import Settings
 from app.main import create_app
 
 
+@pytest.fixture(autouse=True)
+def disable_local_transcript_override(monkeypatch):
+    # A developer's local fixture must not replace provider mocks in ordinary tests.
+    monkeypatch.setenv("TRANSCRIPTION_FIXTURE_PATH", "")
+
+
 @pytest.fixture
 def recordings_dir(tmp_path: Path) -> Path:
     return tmp_path / "recordings"

@@ -1,0 +1,9 @@
+{
+  "turns": [
+    {"role": "therapist", "text": "How have things been since our last session?"},
+    {"role": "client", "text": "My mood has varied. I have also had trouble getting motivated, although my sleep has been okay."},
+    {"role": "therapist", "text": "Would you like to record your mood and motivation so we can discuss the patterns next time?"},
+    {"role": "client", "text": "Yes, I agree to record my mood and motivation. I don't want to track sleep quality for now."},
+    {"role": "therapist", "text": "Agreed. We can review what you notice in our next session."}
+  ]
+}

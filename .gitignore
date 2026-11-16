@@ -4,6 +4,7 @@
 .idea/
 .DS_Store
 data/recordings/
+data/dev-transcript.json
 recordings/
 __pycache__/
 *.py[cod]
