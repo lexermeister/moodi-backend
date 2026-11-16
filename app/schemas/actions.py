@@ -7,8 +7,11 @@ from pydantic import Field, model_validator
 
 from app.schemas.session_insights import RecordMoodConfiguration, StrictModel
 
+type MoodMeasurement = Literal["mood", "energy", "sleep_quality", "motivation"]
+
 
 class RecordMoodActionSettings(StrictModel):
+    what_to_record: list[MoodMeasurement] = Field(default_factory=lambda: ["mood", "energy"])
     exact_task: str = Field(min_length=1, max_length=1000)
     frequency: str = Field(min_length=1, max_length=200)
     timing: str | None = Field(default=None, max_length=200)
@@ -27,6 +30,10 @@ class RecordMoodActionSettings(StrictModel):
 
     @model_validator(mode="after")
     def validate_date_range(self) -> "RecordMoodActionSettings":
+        if "mood" not in self.what_to_record:
+            raise ValueError("Record mood must include mood")
+        if len(set(self.what_to_record)) != len(self.what_to_record):
+            raise ValueError("Measurements must be unique")
         if (self.preferred_check_in_time is None) != (self.preferred_time_zone is None):
             raise ValueError("Preferred check-in time and timezone must be supplied together")
         if self.preferred_time_zone is not None:
@@ -108,6 +115,15 @@ class MoodCandidateResolutionResponse(StrictModel):
 
 
 class MoodEntryValues(StrictModel):
+    energy_value: int | None = Field(default=None, ge=0, le=10, strict=True)
+    sleep_quality_value: int | None = Field(default=None, ge=0, le=10, strict=True)
+    motivation_value: int | None = Field(default=None, ge=0, le=10, strict=True)
+    feelings: list[Literal["Calm", "Tired", "Relieved", "Anxious"]] = Field(default_factory=list)
+    custom_feeling: str | None = Field(default=None, min_length=1, max_length=500)
+    feeling_intensity: int | None = Field(default=None, ge=0, le=10, strict=True)
+    current_step: Literal[
+        "mood", "additional_ratings", "feelings", "intensity", "context", "review"
+    ] = "mood"
     relevant_date: date
     entry_time: datetime
     timezone_offset_minutes: int = Field(ge=-840, le=840)
@@ -121,6 +137,12 @@ class MoodEntryValues(StrictModel):
     def validate_captured_date(self) -> "MoodEntryValues":
         if self.entry_time.tzinfo is None or self.entry_time.utcoffset() is None:
             raise ValueError("Entry time must include a timezone offset")
+        if len(set(self.feelings)) != len(self.feelings):
+            raise ValueError("Feelings must be unique")
+        if self.custom_feeling is not None and not self.custom_feeling.strip():
+            raise ValueError("Custom feeling cannot be blank")
+        if self.feeling_intensity is not None and not (self.feelings or self.custom_feeling):
+            raise ValueError("Feeling intensity requires a feeling")
         captured = self.entry_time.astimezone(UTC) + timedelta(minutes=self.timezone_offset_minutes)
         if captured.date() != self.day_key or self.relevant_date != self.day_key:
             raise ValueError("Day key must match entry time, captured offset, and relevant date")

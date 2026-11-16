@@ -147,7 +147,9 @@ class ActionService:
             self._validate_reviewed_settings(candidate, settings)
             ongoing_action = self._find_active_ongoing_action()
             if ongoing_action is not None:
-                if not self._candidate_matches_action(candidate, ongoing_action):
+                if not self._candidate_matches_action(candidate, ongoing_action) or set(
+                    settings.what_to_record
+                ) != set(ongoing_action.settings.what_to_record):
                     raise ActionConflictError(
                         "An active ongoing mood Action already has different settings"
                     )
@@ -339,6 +341,12 @@ class ActionService:
         return action, entry_count
 
     def save_draft(
+        self, action_id: UUID, entry_id: UUID, request: SaveMoodEntryDraftRequest
+    ) -> MoodEntry:
+        with self._mutation_lock:
+            return self._save_draft(action_id, entry_id, request)
+
+    def _save_draft(
         self,
         action_id: UUID,
         entry_id: UUID,
@@ -367,6 +375,12 @@ class ActionService:
         return entry
 
     def confirm_entry(
+        self, action_id: UUID, entry_id: UUID, request: ConfirmMoodEntryRequest
+    ) -> MoodEntry:
+        with self._mutation_lock:
+            return self._confirm_entry(action_id, entry_id, request)
+
+    def _confirm_entry(
         self,
         action_id: UUID,
         entry_id: UUID,
@@ -398,6 +412,12 @@ class ActionService:
         return entry
 
     def amend_entry(
+        self, action_id: UUID, entry_id: UUID, request: AmendMoodEntryRequest
+    ) -> MoodEntry:
+        with self._mutation_lock:
+            return self._amend_entry(action_id, entry_id, request)
+
+    def _amend_entry(
         self,
         action_id: UUID,
         entry_id: UUID,
@@ -452,6 +472,10 @@ class ActionService:
         )
 
     def delete_entry(self, action_id: UUID, entry_id: UUID) -> None:
+        with self._mutation_lock:
+            self._delete_entry(action_id, entry_id)
+
+    def _delete_entry(self, action_id: UUID, entry_id: UUID) -> None:
         self.load_action(action_id)
         path = self._entry_path(action_id, entry_id)
         if not path.is_file():
@@ -517,11 +541,15 @@ class ActionService:
                 "Mood entry is after this Action ends",
                 reason="entry_after_action",
             )
-        if values.context is not None and not configuration.context_enabled:
-            raise ActionValidationError(
-                "Context is not enabled for this Action",
-                reason="unsupported_context",
-            )
+        for measurement in ("energy", "sleep_quality", "motivation"):
+            if (
+                getattr(values, f"{measurement}_value") is not None
+                and measurement not in action.settings.what_to_record
+            ):
+                raise ActionValidationError(
+                    "Measurement is not enabled for this Action",
+                    reason="unsupported_measurement",
+                )
         if configuration.input_kind == "numeric_0_10":
             if values.mood_label is not None:
                 raise ActionValidationError(
@@ -542,7 +570,17 @@ class ActionService:
                     reason="unsupported_mood_rating",
                 )
         if confirmed and not any(
-            value is not None for value in (values.mood_value, values.mood_label, values.context)
+            value is not None
+            for value in (
+                values.mood_value,
+                values.mood_label,
+                values.context,
+                values.energy_value,
+                values.sleep_quality_value,
+                values.motivation_value,
+                values.custom_feeling,
+                values.feelings or None,
+            )
         ):
             raise ActionValidationError(
                 "Confirmed mood entry cannot be empty",
@@ -589,7 +627,11 @@ class ActionService:
             idempotency_key=idempotency_key,
             created_at=now if existing is None else existing.created_at,
             updated_at=now,
-            confirmed_at=now if status == "confirmed" else None,
+            confirmed_at=(
+                (existing.confirmed_at if existing is not None else None) or now
+                if status == "confirmed"
+                else None
+            ),
         )
 
     def _load_current_draft(self, recording_id: UUID) -> CompletedSessionInsights:

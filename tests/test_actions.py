@@ -1,10 +1,109 @@
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.schemas.actions import MoodAction, MoodEntry
 from tests.test_session_insights import FakeOpenAIClient, configured_client, upload_recording
+
+
+def test_saved_legacy_action_and_entry_remain_readable(recordings_dir: Path) -> None:
+    with configured_client(recordings_dir, FakeOpenAIClient(record_mood_candidate=True)) as client:
+        recording, insights = generate_candidate(client)
+        action = activate_candidate(client, recording, insights)["action"]
+        del action["settings"]["what_to_record"]
+        assert MoodAction.model_validate(action).settings.what_to_record == ["mood", "energy"]
+        response = client.post(
+            f"/actions/{action['id']}/entries/{uuid4()}/confirm",
+            json={"values": entry_values(), "idempotency_key": "legacy"},
+        )
+        assert response.status_code == 200
+        saved = response.json()
+        saved["values"] = entry_values()
+        entry = MoodEntry.model_validate(saved)
+        assert entry.values.mood_value == 0
+        assert entry.values.energy_value is None
+        assert entry.values.feelings == []
+
+
+def test_combined_entry_draft_confirmation_and_history(recordings_dir: Path) -> None:
+    with configured_client(recordings_dir, FakeOpenAIClient(record_mood_candidate=True)) as client:
+        recording, insights = generate_candidate(client)
+        candidate = insights["result"]["action_candidates"][0]
+        settings = reviewed_settings(candidate)
+        settings["what_to_record"] = ["mood", "energy", "sleep_quality", "motivation"]
+        response = client.put(
+            f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review",
+            json={
+                "draft_id": insights["draft_id"],
+                "source_version": insights["source_version"],
+                "disposition": "activate",
+                "settings": settings,
+            },
+        )
+        assert response.status_code == 200
+        action_id = response.json()["action"]["id"]
+        path = f"/actions/{action_id}/entries/{uuid4()}"
+        values = entry_values()
+        values.update(mood_value=None, scale_id=None, current_step="additional_ratings")
+        draft = client.put(f"{path}/draft", json={"values": values})
+        assert draft.status_code == 200
+        assert draft.json()["values"]["energy_value"] is None
+        loaded = client.get(f"/actions/{action_id}/entries").json()["entries"][0]
+        assert loaded == draft.json()
+        values.update(
+            mood_value=0,
+            scale_id="overall-day-mood-0-10-v1",
+            energy_value=0,
+            sleep_quality_value=8,
+            motivation_value=3,
+            feelings=["Calm", "Tired"],
+            custom_feeling="Hopeful",
+            feeling_intensity=0,
+            context="After a walk",
+            current_step="review",
+        )
+        payload = {"values": values, "expected_revision": 1, "idempotency_key": "combined"}
+        confirmed = client.post(f"{path}/confirm", json=payload)
+        assert confirmed.status_code == 200
+        assert client.post(f"{path}/confirm", json=payload).json() == confirmed.json()
+        values["energy_value"] = 7
+        amended = client.patch(path, json={"values": values, "expected_revision": 2})
+        assert amended.status_code == 200
+        assert amended.json()["confirmed_at"] == confirmed.json()["confirmed_at"]
+        assert amended.json()["revision_history"][-1]["values"]["energy_value"] == 0
+        assert (
+            client.patch(path, json={"values": values, "expected_revision": 2}).status_code == 409
+        )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"energy_value": -1},
+        {"energy_value": 11},
+        {"energy_value": True},
+        {"motivation_value": 5},
+        {"sleep_quality_value": 5},
+        {"feeling_intensity": 5},
+        {"feelings": ["Unknown"]},
+        {"feelings": ["Calm", "Calm"]},
+        {"custom_feeling": "   "},
+    ],
+)
+def test_combined_entry_rejects_invalid_answers(recordings_dir: Path, extra: dict) -> None:
+    with configured_client(recordings_dir, FakeOpenAIClient(record_mood_candidate=True)) as client:
+        recording, insights = generate_candidate(client)
+        action = activate_candidate(client, recording, insights)["action"]
+        assert action["settings"]["what_to_record"] == ["mood", "energy"]
+        response = client.put(
+            f"/actions/{action['id']}/entries/{uuid4()}/draft",
+            json={"values": entry_values() | extra},
+        )
+        assert response.status_code == 422
 
 
 def generate_candidate(client: TestClient) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -546,7 +645,7 @@ def test_delete_action_rolls_back_if_staging_fails(
         assert not list((recordings_dir / "actions" / ".deleting").iterdir())
 
 
-def test_action_configuration_rejects_unassigned_context(recordings_dir: Path) -> None:
+def test_context_is_available_for_all_mood_entries(recordings_dir: Path) -> None:
     fake_openai = FakeOpenAIClient(record_mood_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         recording, insights = generate_candidate(client)
@@ -560,8 +659,8 @@ def test_action_configuration_rejects_unassigned_context(recordings_dir: Path) -
             },
         )
 
-    assert response.status_code == 422
-    assert response.json() == {"detail": "Context is not enabled for this Action"}
+    assert response.status_code == 200
+    assert response.json()["values"]["context"] == "Not part of the assignment"
 
 
 def test_entry_day_key_must_match_captured_offset(recordings_dir: Path) -> None:
