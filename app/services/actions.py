@@ -7,8 +7,11 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from uuid import NAMESPACE_URL, UUID, uuid5
+from zoneinfo import ZoneInfo
 
 from app.schemas.actions import (
+    ActionReviewConfirmationRequest,
+    ActionReviewConfirmationResponse,
     AmendMoodEntryRequest,
     ConfirmMoodEntryRequest,
     MoodAction,
@@ -54,6 +57,7 @@ class ActionService:
         self.root = directory / "actions"
         self.actions_directory = self.root / "records"
         self.reviews_directory = self.root / "reviews"
+        self.confirmations_directory = self.root / "confirmations"
         self.entries_directory = self.root / "entries"
         self.deletions_directory = self.root / ".deleting"
         self.insights_service = insights_service
@@ -62,6 +66,7 @@ class ActionService:
     def prepare(self) -> None:
         self.actions_directory.mkdir(parents=True, exist_ok=True)
         self.reviews_directory.mkdir(parents=True, exist_ok=True)
+        self.confirmations_directory.mkdir(parents=True, exist_ok=True)
         self.entries_directory.mkdir(parents=True, exist_ok=True)
         self.deletions_directory.mkdir(parents=True, exist_ok=True)
         self._recover_pending_deletions()
@@ -117,13 +122,21 @@ class ActionService:
                 request.disposition == "activate"
                 and existing.action is not None
                 and request.settings is not None
-                and set(request.settings.what_to_record)
-                != set(existing.action.settings.what_to_record)
+                and (
+                    set(request.settings.what_to_record)
+                    != set(existing.action.settings.what_to_record)
+                    or request.settings.cadence != existing.action.settings.cadence
+                    or request.settings.weekly_weekday != existing.action.settings.weekly_weekday
+                    or request.settings.preferred_check_in_time
+                    != existing.action.settings.preferred_check_in_time
+                    or request.settings.preferred_time_zone
+                    != existing.action.settings.preferred_time_zone
+                )
             ):
                 raise ActionConflictError(
                     "This candidate was activated with different measurements"
                 )
-            return existing
+            return self._review_with_current_action(existing)
 
         reviewed_at = datetime.now(UTC)
         action: MoodAction | None = None
@@ -138,7 +151,12 @@ class ActionService:
             start_date = (
                 None
                 if settings.duration_kind == "unscheduled"
-                else settings.start_date or reviewed_at.date()
+                else settings.start_date
+                or (
+                    reviewed_at.astimezone(ZoneInfo(settings.preferred_time_zone)).date()
+                    if settings.preferred_time_zone
+                    else reviewed_at.date()
+                )
             )
             if settings.duration_kind in ("ongoing", "unscheduled"):
                 end_date = None
@@ -161,13 +179,20 @@ class ActionService:
             self._validate_reviewed_settings(candidate, settings)
             ongoing_action = self._find_active_ongoing_action()
             if ongoing_action is not None:
-                if not self._candidate_matches_action(
-                    candidate, ongoing_action, measurements=settings.what_to_record
-                ):
+                if not self._candidate_matches_action(candidate, ongoing_action):
                     raise ActionConflictError(
-                        "An active Record mood Action already has different settings"
+                        "An active Record mood Action uses a different mood scale"
                     )
+                settings = settings.model_copy(
+                    update={"start_date": ongoing_action.settings.start_date or settings.start_date}
+                )
+                settings = RecordMoodActionSettings.model_validate(settings.model_dump())
                 action = ongoing_action
+                if action.settings != settings:
+                    action = action.model_copy(
+                        update={"settings": settings, "revision": action.revision + 1}
+                    )
+                    self._atomic_write(self._action_path(action.id), action.model_dump(mode="json"))
                 review_disposition = "linked_existing"
             else:
                 action_id = uuid5(
@@ -246,7 +271,7 @@ class ActionService:
                     draft_id=draft.draft_id,
                     source_version=draft.source_version,
                     status=review.disposition,
-                    action=review.action,
+                    action=self._review_with_current_action(review).action,
                 )
 
             ongoing_action = self._find_active_ongoing_action()
@@ -280,7 +305,102 @@ class ActionService:
         draft = self._load_current_draft(recording_id)
         if review.draft_id != draft.draft_id or review.source_version != draft.source_version:
             raise ActionConflictError("Session insights changed; review the latest candidate")
-        return review
+        return self._review_with_current_action(review)
+
+    def confirm_action_reviews(
+        self, recording_id: UUID, request: ActionReviewConfirmationRequest
+    ) -> ActionReviewConfirmationResponse:
+        with self._mutation_lock:
+            self.prepare()
+            draft = self._load_current_draft(recording_id)
+            if request.draft_id != draft.draft_id or request.source_version != draft.source_version:
+                raise ActionConflictError("Session insights changed; review the latest actions")
+            candidate_ids = [candidate.id for candidate in draft.result.action_candidates]
+            if not candidate_ids:
+                raise ActionValidationError(
+                    "There are no proposed actions to confirm", reason="no_action_candidates"
+                )
+            action_ids = self._confirmed_action_ids(
+                recording_id, candidate_ids, draft.draft_id, draft.source_version
+            )
+            path = self.confirmations_directory / f"{recording_id}.json"
+            if path.is_file():
+                existing = self._load_model(
+                    path, ActionReviewConfirmationResponse, "Failed to load Action confirmation"
+                )
+                if (
+                    existing.draft_id == draft.draft_id
+                    and existing.source_version == draft.source_version
+                    and existing.candidate_ids == candidate_ids
+                    and existing.action_ids == action_ids
+                ):
+                    return existing
+            confirmation = ActionReviewConfirmationResponse(
+                recording_id=recording_id,
+                draft_id=draft.draft_id,
+                source_version=draft.source_version,
+                candidate_ids=candidate_ids,
+                action_ids=action_ids,
+                confirmed_at=datetime.now(UTC),
+            )
+            self._atomic_write(path, confirmation.model_dump(mode="json"))
+            return confirmation
+
+    def load_action_review_confirmation(
+        self, recording_id: UUID
+    ) -> ActionReviewConfirmationResponse:
+        with self._mutation_lock:
+            self.prepare()
+            path = self.confirmations_directory / f"{recording_id}.json"
+            if not path.is_file():
+                raise ActionNotFoundError("Action review confirmation was not found")
+            confirmation = self._load_model(
+                path, ActionReviewConfirmationResponse, "Failed to load Action confirmation"
+            )
+            draft = self._load_current_draft(recording_id)
+            candidate_ids = [candidate.id for candidate in draft.result.action_candidates]
+            if (
+                confirmation.draft_id != draft.draft_id
+                or confirmation.source_version != draft.source_version
+                or confirmation.candidate_ids != candidate_ids
+            ):
+                raise ActionConflictError("Session insights changed; review the latest actions")
+            try:
+                action_ids = self._confirmed_action_ids(
+                    recording_id, candidate_ids, draft.draft_id, draft.source_version
+                )
+            except ActionValidationError as error:
+                raise ActionNotFoundError(
+                    "Action review confirmation is no longer current"
+                ) from error
+            if confirmation.action_ids != action_ids:
+                raise ActionNotFoundError("Action review confirmation is no longer current")
+            return confirmation
+
+    def _confirmed_action_ids(
+        self, recording_id: UUID, candidate_ids: list[str], draft_id: str, source_version: str
+    ) -> list[UUID]:
+        action_ids: list[UUID] = []
+        for candidate_id in candidate_ids:
+            review = self._load_review(recording_id, candidate_id)
+            action = (
+                self._load_action_if_present(review.action.id)
+                if review is not None and review.action is not None
+                else None
+            )
+            if (
+                review is None
+                or review.draft_id != draft_id
+                or review.source_version != source_version
+                or review.disposition not in ("activated", "linked_existing")
+                or (action is None or action.state != "active")
+            ):
+                raise ActionValidationError(
+                    "Activate every proposed action before confirming",
+                    reason="unactivated_action_candidate",
+                )
+            action_ids.append(action.id)
+        return action_ids
 
     def list_actions(self, recording_id: UUID | None = None) -> list[MoodAction]:
         self._recover_pending_deletions()
@@ -313,6 +433,7 @@ class ActionService:
         action = self.load_action(action_id)
         action_path = self._action_path(action_id)
         review_paths = self._review_paths_for_action(action_id)
+        confirmation_paths = self._confirmation_paths_for_action(action_id)
         entries_path = self._entry_directory(action_id)
         deletion_path = self._deletion_path(action_id)
 
@@ -331,6 +452,7 @@ class ActionService:
                 (review_path, deletion_path / "reviews" / review_path.name)
                 for review_path in review_paths
             ],
+            *[(path, deletion_path / "confirmations" / path.name) for path in confirmation_paths],
             (entries_path, deletion_path / "entries" / entries_path.name),
             (action_path, deletion_path / "records" / action_path.name),
         ]
@@ -678,23 +800,19 @@ class ActionService:
         return self._load_model(path, MoodEntry, "Failed to load mood entry")
 
     def _find_active_ongoing_action(self) -> MoodAction | None:
-        return next(
-            (
-                action
-                for action in self.list_actions()
-                if action.type == "record_mood"
-                and action.state == "active"
-                and action.settings.duration_kind in ("ongoing", "unscheduled")
-            ),
-            None,
+        active = (
+            action
+            for action in self.list_actions()
+            if action.type == "record_mood"
+            and action.state == "active"
+            and action.settings.duration_kind in ("ongoing", "unscheduled")
         )
+        return min(active, key=lambda action: (action.created_at, str(action.id)), default=None)
 
     @staticmethod
     def _candidate_matches_action(
         candidate: RecordMoodCandidate,
         action: MoodAction,
-        *,
-        measurements: list[str] | None = None,
     ) -> bool:
         candidate_configuration = candidate.configuration
         action_configuration = action.settings.configuration
@@ -703,19 +821,17 @@ class ActionService:
         candidate_scale = candidate_configuration.scale
         action_scale = action_configuration.scale
         return (
-            set(measurements if measurements is not None else candidate.what_to_record)
-            == set(action.settings.what_to_record)
-            and (
-                action.settings.duration_kind == "unscheduled"
-                or (
-                    candidate.frequency == action.settings.frequency
-                    and candidate.timing == action.settings.timing
-                )
-            )
-            and candidate.reference_period == action.settings.reference_period
-            and candidate_configuration.input_kind == action_configuration.input_kind
+            candidate_configuration.input_kind == action_configuration.input_kind
             and candidate_scale == action_scale
         )
+
+    def _review_with_current_action(
+        self, review: MoodCandidateReviewResponse
+    ) -> MoodCandidateReviewResponse:
+        if review.action is None:
+            return review
+        current = self._load_action_if_present(review.action.id)
+        return review.model_copy(update={"action": current}) if current is not None else review
 
     def _review_paths_for_action(self, action_id: UUID) -> list[Path]:
         if not self.reviews_directory.is_dir():
@@ -734,6 +850,22 @@ class ActionService:
             if review.action is not None and review.action.id == action_id:
                 linked.append(path)
         return linked
+
+    def _confirmation_paths_for_action(self, action_id: UUID) -> list[Path]:
+        if not self.confirmations_directory.is_dir():
+            return []
+        try:
+            paths = list(self.confirmations_directory.glob("*.json"))
+        except OSError as error:
+            raise ActionStorageError("Failed to list Action confirmations") from error
+        return [
+            path
+            for path in paths
+            if action_id
+            in self._load_model(
+                path, ActionReviewConfirmationResponse, "Failed to load Action confirmation"
+            ).action_ids
+        ]
 
     @staticmethod
     def _load_model(path: Path, model: type, message: str):
@@ -791,6 +923,7 @@ class ActionService:
         destinations = {
             "records": self.actions_directory,
             "reviews": self.reviews_directory,
+            "confirmations": self.confirmations_directory,
             "entries": self.entries_directory,
         }
         try:

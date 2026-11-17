@@ -1,9 +1,16 @@
 {
   "turns": [
-    {"role": "therapist", "text": "How have things been since our last session?"},
-    {"role": "client", "text": "My mood has varied. I have also had trouble getting motivated, although my sleep has been okay."},
-    {"role": "therapist", "text": "Would you like to record your mood and motivation so we can discuss the patterns next time?"},
-    {"role": "client", "text": "Yes, I agree to record my mood and motivation. I don't want to track sleep quality for now."},
-    {"role": "therapist", "text": "Agreed. We can review what you notice in our next session."}
+    {"role": "client", "text": "Even after I close my laptop, I keep replaying work in my head. By dinner I feel flat and still a bit on edge."},
+    {"role": "client", "text": "On Tuesday I put some music on while I made dinner. I noticed I settled a little sooner when there was something between work and the rest of the evening."},
+    {"role": "therapist", "text": "We can try noticing how the evening feels, without aiming for a particular score. The check-in is a way to observe, rather than another task to get right."},
+    {"role": "client", "text": "We looked at the evenings when a work message comes in late. I usually read it straight away, and then it’s harder for me to be present at dinner."},
+    {"role": "client", "text": "I’ll rate my mood from zero to ten each evening around eight. I can add an energy rating if I feel like it."},
+    {"role": "client", "text": "I can make time for one thing I enjoy or find meaningful this week. I’ll choose what it is when I see how the week goes."},
+    {"role": "client", "text": "I’ll try the same breathing practice we did together once this week, for three minutes after work. I’m happy to note my tension before and after if I feel like it."},
+    {"role": "therapist", "text": "I’ll send you the recording we used. The check-in can just ask how it went."},
+    {"role": "client", "text": "Thursday evenings are tight because I pick up my niece. I’d like to keep that in mind."},
+    {"role": "therapist", "text": "A short journal might be worth talking about another time, if you’re interested."},
+    {"role": "client", "text": "Next time, can we look at whether I felt any different on the evenings when I gave myself a little time after work?"},
+    {"role": "therapist", "text": "Yes, let’s compare what you noticed at our next session."}
   ]
 }

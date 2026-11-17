@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 
 from app.core.logging import get_logger
 from app.schemas.actions import (
+    ActionReviewConfirmationRequest,
+    ActionReviewConfirmationResponse,
     AmendMoodEntryRequest,
     ConfirmMoodEntryRequest,
     MoodAction,
@@ -98,6 +100,51 @@ def review_record_mood_candidate(
         review.disposition,
     )
     return review
+
+
+@router.put(
+    "/recordings/{recording_id}/actions/confirmation",
+    response_model=ActionReviewConfirmationResponse,
+)
+def confirm_recording_actions(
+    recording_id: UUID,
+    payload: ActionReviewConfirmationRequest,
+    request: Request,
+) -> ActionReviewConfirmationResponse:
+    try:
+        get_recording_storage(request).find(recording_id)
+        confirmation = get_action_service(request).confirm_action_reviews(recording_id, payload)
+    except RecordingNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (
+        ActionNotFoundError,
+        ActionConflictError,
+        ActionValidationError,
+        ActionStorageError,
+    ) as error:
+        _raise_action_error(error, event="action_review_confirmation_failed")
+    logger.info(
+        "action_reviews_confirmed recording_id=%s action_count=%s",
+        recording_id,
+        len(confirmation.action_ids),
+    )
+    return confirmation
+
+
+@router.get(
+    "/recordings/{recording_id}/actions/confirmation",
+    response_model=ActionReviewConfirmationResponse,
+)
+def get_recording_actions_confirmation(
+    recording_id: UUID, request: Request
+) -> ActionReviewConfirmationResponse:
+    try:
+        get_recording_storage(request).find(recording_id)
+        return get_action_service(request).load_action_review_confirmation(recording_id)
+    except RecordingNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (ActionNotFoundError, ActionConflictError, ActionStorageError) as error:
+        _raise_action_error(error, event="action_review_confirmation_load_failed")
 
 
 @router.get(

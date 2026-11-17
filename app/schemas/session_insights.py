@@ -74,7 +74,7 @@ class RecordMoodConfiguration(StrictModel):
 
 
 class RecordMoodCandidate(StrictModel):
-    what_to_record: list[MoodMeasurement] = Field(default_factory=lambda: ["mood", "energy"])
+    what_to_record: list[MoodMeasurement] = Field(default_factory=lambda: ["mood"])
     id: str
     type: Literal["record_mood"]
     state: Literal["review_ready"]
@@ -93,8 +93,8 @@ class RecordMoodCandidate(StrictModel):
 
     @model_validator(mode="after")
     def validate_review_state(self) -> "RecordMoodCandidate":
-        if not {"mood", "energy"} <= set(self.what_to_record):
-            raise ValueError("Suggested measurements must include Mood and Energy defaults")
+        if "mood" not in self.what_to_record:
+            raise ValueError("Suggested measurements must include Mood")
         if len(set(self.what_to_record)) != len(self.what_to_record):
             raise ValueError("Suggested measurements must be unique")
         if self.state == "review_ready" and (

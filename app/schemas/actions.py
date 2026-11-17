@@ -24,6 +24,8 @@ class RecordMoodActionSettings(StrictModel):
     )
     preferred_time_zone: str | None = Field(default=None, min_length=1, max_length=120)
     schedule_origin: Literal["moodi_default", "user_selected"] = "moodi_default"
+    cadence: Literal["daily", "weekdays", "weekly"] | None = None
+    weekly_weekday: int | None = Field(default=None, ge=0, le=6)
     configuration: RecordMoodConfiguration
 
     @model_validator(mode="after")
@@ -41,12 +43,18 @@ class RecordMoodActionSettings(StrictModel):
                     self.duration_days,
                     self.preferred_check_in_time,
                     self.preferred_time_zone,
+                    self.cadence,
+                    self.weekly_weekday,
                 )
             ):
                 raise ValueError("Unscheduled actions cannot have dates, durations, or reminders")
             return self
         if (self.preferred_check_in_time is None) != (self.preferred_time_zone is None):
             raise ValueError("Preferred check-in time and timezone must be supplied together")
+        if self.cadence is not None and self.preferred_check_in_time is None:
+            raise ValueError("Scheduled actions require an exact reminder time and timezone")
+        if (self.cadence == "weekly") != (self.weekly_weekday is not None):
+            raise ValueError("Weekly actions require one weekday; other cadences cannot set one")
         if self.preferred_time_zone is not None:
             try:
                 ZoneInfo(self.preferred_time_zone)
@@ -123,6 +131,21 @@ class MoodCandidateResolutionResponse(StrictModel):
     ]
     action: MoodAction | None
     reason: Literal["incompatible_ongoing_action"] | None = None
+
+
+class ActionReviewConfirmationRequest(StrictModel):
+    draft_id: str
+    source_version: str
+
+
+class ActionReviewConfirmationResponse(StrictModel):
+    recording_id: UUID
+    draft_id: str
+    source_version: str
+    status: Literal["confirmed"] = "confirmed"
+    candidate_ids: list[str]
+    action_ids: list[UUID]
+    confirmed_at: datetime
 
 
 class MoodEntryValues(StrictModel):

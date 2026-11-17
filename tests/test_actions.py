@@ -98,7 +98,7 @@ def test_combined_entry_rejects_invalid_answers(recordings_dir: Path, extra: dic
     with configured_client(recordings_dir, FakeOpenAIClient(record_mood_candidate=True)) as client:
         recording, insights = generate_candidate(client)
         action = activate_candidate(client, recording, insights)["action"]
-        assert action["settings"]["what_to_record"] == ["mood", "energy"]
+        assert action["settings"]["what_to_record"] == ["mood"]
         response = client.put(
             f"/actions/{action['id']}/entries/{uuid4()}/draft",
             json={"values": entry_values() | extra},
@@ -342,8 +342,8 @@ def test_candidate_reuses_compatible_active_ongoing_action(recordings_dir: Path)
         assert resolution.json()["status"] == "already_active"
         assert resolution.json()["action"] == action
 
-        linked = activate_candidate(client, second_recording, second_insights)
-        retried = activate_candidate(client, second_recording, second_insights)
+        linked = activate_ongoing_candidate(client, second_recording, second_insights)
+        retried = activate_ongoing_candidate(client, second_recording, second_insights)
 
         assert linked == retried
         assert linked["disposition"] == "linked_existing"
@@ -389,14 +389,14 @@ def test_fixed_action_does_not_block_another_action(recordings_dir: Path) -> Non
         assert len(client.get("/actions").json()["actions"]) == 2
 
 
-def test_incompatible_ongoing_action_blocks_activation(recordings_dir: Path) -> None:
+def test_different_mood_scale_blocks_updating_ongoing_action(recordings_dir: Path) -> None:
     fake_openai = FakeOpenAIClient(record_mood_candidate=True)
     with configured_client(recordings_dir, fake_openai) as client:
         first_recording, first_insights = generate_candidate(client)
         action = activate_ongoing_candidate(client, first_recording, first_insights)["action"]
         action_path = recordings_dir / "actions" / "records" / f"{action['id']}.json"
         stored_action = json.loads(action_path.read_text(encoding="utf-8"))
-        stored_action["settings"]["timing"] = "morning"
+        stored_action["settings"]["configuration"]["scale"]["id"] = "another-mood-scale"
         action_path.write_text(json.dumps(stored_action), encoding="utf-8")
 
         second_recording, second_insights = generate_candidate(client)
@@ -422,7 +422,7 @@ def test_incompatible_ongoing_action_blocks_activation(recordings_dir: Path) -> 
         assert resolution.json()["action"]["id"] == action["id"]
         assert activation.status_code == 409
         assert activation.json() == {
-            "detail": "An active Record mood Action already has different settings"
+            "detail": "An active Record mood Action uses a different mood scale"
         }
         assert len(client.get("/actions").json()["actions"]) == 1
 

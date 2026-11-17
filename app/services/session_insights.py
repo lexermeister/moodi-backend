@@ -20,7 +20,7 @@ from app.schemas.session_insights import (
 )
 from app.services.transcript_store import TranscriptStore
 
-SESSION_INSIGHTS_PROMPT_VERSION = "v0.5.0"
+SESSION_INSIGHTS_PROMPT_VERSION = "v0.5.1"
 MAX_GENERATION_ATTEMPTS = 2
 logger = get_logger("services.session_insights")
 
@@ -183,7 +183,11 @@ class SessionInsightsService:
         request_fingerprint = self._request_fingerprint(input_data)
 
         cached = self._load(recording_id)
-        if cached is not None and cached.request_fingerprint == request_fingerprint:
+        if (
+            cached is not None
+            and cached.prompt_version == SESSION_INSIGHTS_PROMPT_VERSION
+            and cached.request_fingerprint == request_fingerprint
+        ):
             logger.info(
                 "insights_cache_hit recording_id=%s source_version=%s prompt_version=%s model=%s",
                 recording_id,
@@ -401,7 +405,10 @@ class SessionInsightsService:
 
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if payload.get("prompt_version") != SESSION_INSIGHTS_PROMPT_VERSION:
+            if payload.get("prompt_version") not in {
+                SESSION_INSIGHTS_PROMPT_VERSION,
+                "v0.5.0",
+            }:
                 return None
             request_fingerprint = payload.pop("request_fingerprint")
             if "draft_id" not in payload:
