@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.api import (
     actions,
+    demo_reset,
     health,
     recordings,
     session_insights,
@@ -37,6 +38,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        application.state.settings = application_settings
         storage = RecordingStorage(
             directory=application_settings.recordings_path,
             max_size_bytes=application_settings.max_upload_bytes,
@@ -99,6 +101,7 @@ def create_app(
     application.include_router(session_insights.router)
     application.include_router(session_insights_review.router)
     application.include_router(actions.router)
+    application.include_router(demo_reset.router)
     return application
 
 
