@@ -27,6 +27,8 @@ def test_saved_legacy_action_and_entry_remain_readable(recordings_dir: Path) -> 
         assert entry.values.mood_value == 0
         assert entry.values.energy_value is None
         assert entry.values.feelings == []
+        assert entry.values.thoughts is None
+        assert entry.values.actions_taken is None
 
 
 def test_combined_entry_draft_confirmation_and_history(recordings_dir: Path) -> None:
@@ -48,10 +50,13 @@ def test_combined_entry_draft_confirmation_and_history(recordings_dir: Path) -> 
         action_id = response.json()["action"]["id"]
         path = f"/actions/{action_id}/entries/{uuid4()}"
         values = entry_values()
-        values.update(mood_value=None, scale_id=None, current_step="additional_ratings")
+        values.update(
+            mood_value=None, scale_id=None, current_step="thoughts", thoughts="I might be late"
+        )
         draft = client.put(f"{path}/draft", json={"values": values})
         assert draft.status_code == 200
         assert draft.json()["values"]["energy_value"] is None
+        assert draft.json()["values"]["thoughts"] == "I might be late"
         loaded = client.get(f"/actions/{action_id}/entries").json()["entries"][0]
         assert loaded == draft.json()
         values.update(
@@ -64,11 +69,14 @@ def test_combined_entry_draft_confirmation_and_history(recordings_dir: Path) -> 
             custom_feeling="Hopeful",
             feeling_intensity=0,
             context="After a walk",
+            thoughts="I had time to slow down",
+            actions_taken="I called a friend",
             current_step="review",
         )
         payload = {"values": values, "expected_revision": 1, "idempotency_key": "combined"}
         confirmed = client.post(f"{path}/confirm", json=payload)
         assert confirmed.status_code == 200
+        assert confirmed.json()["values"]["actions_taken"] == "I called a friend"
         assert client.post(f"{path}/confirm", json=payload).json() == confirmed.json()
         values["energy_value"] = 7
         amended = client.patch(path, json={"values": values, "expected_revision": 2})
@@ -92,6 +100,8 @@ def test_combined_entry_draft_confirmation_and_history(recordings_dir: Path) -> 
         {"feelings": ["Unknown"]},
         {"feelings": ["Calm", "Calm"]},
         {"custom_feeling": "   "},
+        {"thoughts": ""},
+        {"actions_taken": "x" * 2001},
     ],
 )
 def test_combined_entry_rejects_invalid_answers(recordings_dir: Path, extra: dict) -> None:

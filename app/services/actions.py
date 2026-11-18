@@ -711,6 +711,8 @@ class ActionService:
                 values.mood_value,
                 values.mood_label,
                 values.context,
+                values.thoughts,
+                values.actions_taken,
                 values.energy_value,
                 values.sleep_quality_value,
                 values.motivation_value,

@@ -156,7 +156,14 @@ class MoodEntryValues(StrictModel):
     custom_feeling: str | None = Field(default=None, min_length=1, max_length=500)
     feeling_intensity: int | None = Field(default=None, ge=0, le=10, strict=True)
     current_step: Literal[
-        "mood", "additional_ratings", "feelings", "intensity", "context", "review"
+        "mood",
+        "additional_ratings",
+        "feelings",
+        "intensity",
+        "context",
+        "thoughts",
+        "actions_taken",
+        "review",
     ] = "mood"
     relevant_date: date
     entry_time: datetime
@@ -165,6 +172,8 @@ class MoodEntryValues(StrictModel):
     mood_value: int | None = Field(default=None, ge=0, le=10)
     mood_label: str | None = Field(default=None, min_length=1, max_length=120)
     context: str | None = Field(default=None, min_length=1, max_length=2000)
+    thoughts: str | None = Field(default=None, min_length=1, max_length=2000)
+    actions_taken: str | None = Field(default=None, min_length=1, max_length=2000)
     scale_id: str | None = Field(default=None, min_length=1, max_length=120)
 
     @model_validator(mode="after")
