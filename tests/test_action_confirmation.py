@@ -5,7 +5,7 @@ from tests.test_mood_setup import setup_request
 from tests.test_session_insights import FakeOpenAIClient, configured_client
 
 
-def test_action_list_confirmation_requires_activation_and_is_persisted(recordings_dir: Path):
+def test_action_list_confirmation_requires_review_and_is_persisted(recordings_dir: Path):
     with configured_client(recordings_dir, FakeOpenAIClient(record_mood_candidate=True)) as client:
         recording, insights = generate_candidate(client)
         endpoint = f"/recordings/{recording['id']}/actions/confirmation"
@@ -14,7 +14,7 @@ def test_action_list_confirmation_requires_activation_and_is_persisted(recording
         assert client.get(endpoint).status_code == 404
         incomplete = client.put(endpoint, json=payload)
         assert incomplete.status_code == 422
-        assert incomplete.json()["detail"] == "Activate every proposed action before confirming"
+        assert incomplete.json()["detail"] == "Review every proposed action before confirming"
 
         activated = client.put(
             f"/recordings/{recording['id']}/action-candidates/C1/review",
@@ -61,4 +61,29 @@ def test_new_insights_draft_requires_new_action_review_before_confirmation(recor
             },
         )
         assert response.status_code == 422
-        assert response.json()["detail"] == "Activate every proposed action before confirming"
+        assert response.json()["detail"] == "Review every proposed action before confirming"
+
+
+def test_rejected_action_can_be_confirmed_without_creating_an_action(recordings_dir: Path):
+    with configured_client(recordings_dir, FakeOpenAIClient(record_mood_candidate=True)) as client:
+        recording, insights = generate_candidate(client)
+        candidate = insights["result"]["action_candidates"][0]
+        review_url = f"/recordings/{recording['id']}/action-candidates/{candidate['id']}/review"
+        endpoint = f"/recordings/{recording['id']}/actions/confirmation"
+        payload = {"draft_id": insights["draft_id"], "source_version": insights["source_version"]}
+
+        rejected = client.put(
+            review_url,
+            json={**payload, "disposition": "reject", "settings": None},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["disposition"] == "rejected"
+        assert rejected.json()["action"] is None
+
+        confirmed = client.put(endpoint, json=payload)
+        assert confirmed.status_code == 200
+        assert confirmed.json()["candidate_ids"] == [candidate["id"]]
+        assert confirmed.json()["action_ids"] == []
+        assert client.get(endpoint).json() == confirmed.json()
+        assert client.put(endpoint, json=payload).json() == confirmed.json()
+        assert client.get("/actions").json() == {"actions": []}

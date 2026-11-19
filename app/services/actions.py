@@ -320,7 +320,7 @@ class ActionService:
                 raise ActionValidationError(
                     "There are no proposed actions to confirm", reason="no_action_candidates"
                 )
-            action_ids = self._confirmed_action_ids(
+            action_ids = self._reviewed_action_ids(
                 recording_id, candidate_ids, draft.draft_id, draft.source_version
             )
             path = self.confirmations_directory / f"{recording_id}.json"
@@ -366,7 +366,7 @@ class ActionService:
             ):
                 raise ActionConflictError("Session insights changed; review the latest actions")
             try:
-                action_ids = self._confirmed_action_ids(
+                action_ids = self._reviewed_action_ids(
                     recording_id, candidate_ids, draft.draft_id, draft.source_version
                 )
             except ActionValidationError as error:
@@ -377,27 +377,34 @@ class ActionService:
                 raise ActionNotFoundError("Action review confirmation is no longer current")
             return confirmation
 
-    def _confirmed_action_ids(
+    def _reviewed_action_ids(
         self, recording_id: UUID, candidate_ids: list[str], draft_id: str, source_version: str
     ) -> list[UUID]:
         action_ids: list[UUID] = []
         for candidate_id in candidate_ids:
             review = self._load_review(recording_id, candidate_id)
-            action = (
-                self._load_action_if_present(review.action.id)
-                if review is not None and review.action is not None
-                else None
-            )
             if (
                 review is None
                 or review.draft_id != draft_id
                 or review.source_version != source_version
-                or review.disposition not in ("activated", "linked_existing")
-                or (action is None or action.state != "active")
             ):
                 raise ActionValidationError(
-                    "Activate every proposed action before confirming",
-                    reason="unactivated_action_candidate",
+                    "Review every proposed action before confirming",
+                    reason="unreviewed_action_candidate",
+                )
+            if review.disposition == "rejected" and review.action is None:
+                continue
+            action = (
+                self._load_action_if_present(review.action.id)
+                if review.action is not None
+                else None
+            )
+            if review.disposition not in ("activated", "linked_existing") or (
+                action is None or action.state != "active"
+            ):
+                raise ActionValidationError(
+                    "Review every proposed action before confirming",
+                    reason="unreviewed_action_candidate",
                 )
             action_ids.append(action.id)
         return action_ids
