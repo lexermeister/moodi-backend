@@ -1,9 +1,11 @@
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.main import create_app
 from app.schemas.session_insights import (
+    EnjoyableActivityCandidate,
     InsightBullet,
     InsightFact,
     InsightSection,
@@ -19,6 +22,8 @@ from app.schemas.session_insights import (
     RecordMoodConfiguration,
     SessionInsightsResult,
 )
+from app.services.session_insights import SessionInsightsService
+from app.services.transcript_store import CompletedTranscription, TranscriptStore, TranscriptTurn
 from app.services.transcription import RoleAttributionDecision
 
 
@@ -47,12 +52,14 @@ class FakeResponses:
         invalid_bullet_references: bool = False,
         record_mood_candidate: bool = False,
         inexact_candidate_excerpt: bool = False,
+        invalid_json_first: bool = False,
         insights_error: Exception | None = None,
     ) -> None:
         self.invalid_insights_count = invalid_insights_count
         self.invalid_bullet_references = invalid_bullet_references
         self.record_mood_candidate = record_mood_candidate
         self.inexact_candidate_excerpt = inexact_candidate_excerpt
+        self.invalid_json_first = invalid_json_first
         self.insights_error = insights_error
         self.calls: list[dict[str, Any]] = []
         self.insights_call_count = 0
@@ -67,6 +74,8 @@ class FakeResponses:
 
         assert kwargs["text_format"] is SessionInsightsResult
         self.insights_call_count += 1
+        if self.invalid_json_first and self.insights_call_count == 1:
+            SessionInsightsResult.model_validate_json('{"status":"draft"} trailing text')
         if self.insights_error is not None:
             raise self.insights_error
 
@@ -158,6 +167,7 @@ class FakeOpenAIClient:
         invalid_bullet_references: bool = False,
         record_mood_candidate: bool = False,
         inexact_candidate_excerpt: bool = False,
+        invalid_json_first: bool = False,
         insights_error: Exception | None = None,
     ) -> None:
         self.transcriptions = FakeTranscriptions()
@@ -167,6 +177,7 @@ class FakeOpenAIClient:
             invalid_bullet_references=invalid_bullet_references,
             record_mood_candidate=record_mood_candidate,
             inexact_candidate_excerpt=inexact_candidate_excerpt,
+            invalid_json_first=invalid_json_first,
             insights_error=insights_error,
         )
 
@@ -245,7 +256,7 @@ def test_insights_are_structured_saved_and_cached(
     assert payload["recording_id"] == recording["id"]
     assert payload["draft_id"].startswith("sha256:")
     assert payload["source_version"].startswith("sha256:")
-    assert payload["prompt_version"] == "v0.5.1"
+    assert payload["prompt_version"] == "v0.6.3"
     assert payload["model"] == "gpt-6-luna"
     assert payload["result"]["status"] == "draft"
     assert payload["result"]["sections"][0]["heading"] == "Today's focus"
@@ -315,7 +326,7 @@ def test_stale_prompt_cache_is_regenerated(
     regenerated = insights_client.post(endpoint, json={})
 
     assert regenerated.status_code == 200
-    assert regenerated.json()["prompt_version"] == "v0.5.1"
+    assert regenerated.json()["prompt_version"] == "v0.6.3"
     assert fake_openai.responses.insights_call_count == 2
 
 
@@ -363,6 +374,17 @@ def test_inexact_candidate_excerpt_is_rejected(
     assert fake_openai.responses.insights_call_count == 2
 
 
+def test_malformed_provider_json_is_retried_once(recordings_dir: Path) -> None:
+    fake_openai = FakeOpenAIClient(invalid_json_first=True)
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording = upload_recording(client)
+        assert client.post(f"/recordings/{recording['id']}/transcription").status_code == 200
+        response = client.post(f"/recordings/{recording['id']}/insights", json={})
+
+    assert response.status_code == 200
+    assert fake_openai.responses.insights_call_count == 2
+
+
 def test_provider_failure_does_not_expose_details(
     recordings_dir: Path,
     caplog: pytest.LogCaptureFixture,
@@ -380,3 +402,170 @@ def test_provider_failure_does_not_expose_details(
     assert "insights_provider_failed" in caplog.text
     assert "sensitive provider failure" not in caplog.text
     assert not (recordings_dir / f"{recording['id']}.insights.json").exists()
+
+
+def test_explicit_mood_commitment_is_recovered_alongside_activity() -> None:
+    mood_text = (
+        "I'll rate my mood from zero to ten each evening around eight. "
+        "I can add an energy rating if I feel like it."
+    )
+    activity_text = "I'll make time for something enjoyable this week."
+    activity = EnjoyableActivityCandidate(
+        id="C1",
+        type="do_enjoyable_or_meaningful_activity",
+        state="review_ready",
+        actor="client",
+        exact_task=activity_text,
+        assignment_kind="general",
+        agreed_activity=None,
+        frequency="this week",
+        timing=None,
+        reference_period="this week",
+        source_excerpt=activity_text,
+        source_ids=["S2"],
+    )
+    result = SessionInsightsResult(
+        session_id="session",
+        source_version="source",
+        status="draft",
+        coverage_note=None,
+        primary_variant="P01",
+        secondary_variant=None,
+        selection_note="Planning",
+        facts=[InsightFact(id="F1", kind="decision", text="Plan made", source_ids=["S1"])],
+        action_candidates=[activity],
+        sections=[
+            InsightSection(
+                key="agreements",
+                heading="What was agreed",
+                bullets=[
+                    InsightBullet(
+                        text="Plan made", fact_ids=["F1"], candidate_ids=["C1"], module=None
+                    )
+                ],
+            )
+        ],
+        review_flags=[],
+    )
+    input_data = {
+        "session_id": "session",
+        "source_version": "source",
+        "segments": [
+            {"id": "S1", "role": "client", "text": mood_text},
+            {"id": "S2", "role": "client", "text": activity_text},
+        ],
+    }
+
+    recovered, added = SessionInsightsService._recover_explicit_mood_commitment(result, input_data)
+
+    assert added
+    assert [candidate.type for candidate in recovered.action_candidates] == [
+        "do_enjoyable_or_meaningful_activity",
+        "record_mood",
+    ]
+    mood = recovered.action_candidates[1]
+    assert isinstance(mood, RecordMoodCandidate)
+    assert mood.id == "C2"
+    assert mood.source_ids == ["S1"]
+    assert mood.frequency == "each evening"
+    assert mood.timing == "around eight"
+    assert mood.what_to_record == ["mood", "energy"]
+    SessionInsightsService._validate(recovered, input_data)
+
+
+@pytest.mark.parametrize(
+    ("role", "text"),
+    [
+        ("therapist", "I'll rate my mood each evening."),
+        ("client", "I rated my mood yesterday."),
+        ("client", "I might rate my mood each evening."),
+        ("client", "I'll rate my mood if I have time."),
+        ("client", "I won't rate my mood."),
+        ("client", "I'll rate my feelings after each meeting."),
+    ],
+)
+def test_mood_recovery_requires_clear_client_commitment(role: str, text: str) -> None:
+    result = SessionInsightsResult(
+        session_id="session",
+        source_version="source",
+        status="draft",
+        coverage_note=None,
+        primary_variant="P01",
+        secondary_variant=None,
+        selection_note="Reflective session",
+        facts=[],
+        action_candidates=[],
+        sections=[],
+        review_flags=[],
+    )
+    recovered, added = SessionInsightsService._recover_explicit_mood_commitment(
+        result, {"segments": [{"id": "S1", "role": role, "text": text}]}
+    )
+    assert not added
+    assert not recovered.action_candidates
+
+
+def test_mood_recovery_ignores_later_retraction() -> None:
+    result = SessionInsightsResult(
+        session_id="session",
+        source_version="source",
+        status="draft",
+        coverage_note=None,
+        primary_variant="P01",
+        secondary_variant=None,
+        selection_note="Reflective session",
+        facts=[],
+        action_candidates=[],
+        sections=[],
+        review_flags=[],
+    )
+    recovered, added = SessionInsightsService._recover_explicit_mood_commitment(
+        result,
+        {
+            "segments": [
+                {"id": "S1", "role": "client", "text": "I'll rate my mood each evening."},
+                {"id": "S2", "role": "client", "text": "I won't rate my mood after all."},
+            ]
+        },
+    )
+    assert not added
+    assert not recovered.action_candidates
+
+
+def test_insights_endpoint_recovers_omitted_mood_candidate(
+    recordings_dir: Path,
+) -> None:
+    fake_openai = FakeOpenAIClient()
+    with configured_client(recordings_dir, fake_openai) as client:
+        recording = upload_recording(client)
+        TranscriptStore(recordings_dir).save(
+            CompletedTranscription(
+                recording_id=UUID(recording["id"]),
+                text="Synthetic session",
+                turns=[
+                    TranscriptTurn(
+                        source_speaker="speaker_1",
+                        role="therapist",
+                        text="What would you like to try this week?",
+                    ),
+                    TranscriptTurn(
+                        source_speaker="speaker_2",
+                        role="client",
+                        text="I'll rate my mood each evening around eight.",
+                    ),
+                ],
+                languages=["en"],
+                model="test-model",
+                role_model="test-role-model",
+                role_prompt_version="test-role-prompt",
+                completed_at=datetime.now(UTC),
+            )
+        )
+        response = client.post(f"/recordings/{recording['id']}/insights", json={})
+
+    assert response.status_code == 200
+    candidates = response.json()["result"]["action_candidates"]
+    assert len(candidates) == 1
+    assert candidates[0]["type"] == "record_mood"
+    assert candidates[0]["source_ids"] == ["S2"]
+    assert candidates[0]["frequency"] == "each evening"

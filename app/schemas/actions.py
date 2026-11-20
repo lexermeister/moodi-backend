@@ -5,7 +5,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, model_validator
 
-from app.schemas.session_insights import MoodMeasurement, RecordMoodConfiguration, StrictModel
+from app.schemas.session_insights import (
+    ActivityMention,
+    MoodMeasurement,
+    RecordMoodConfiguration,
+    StrictModel,
+)
 
 
 class RecordMoodActionSettings(StrictModel):
@@ -91,11 +96,53 @@ class MoodAction(StrictModel):
     revision: int = Field(ge=1)
 
 
+class ActivityActionSettings(StrictModel):
+    exact_task: str = Field(min_length=1, max_length=1000)
+    assignment_kind: Literal["general", "specific"]
+    agreed_activity: str | None = Field(default=None, max_length=200)
+    frequency: str | None = Field(default=None, max_length=200)
+    timing: str | None = Field(default=None, max_length=200)
+    reference_period: str | None = Field(default=None, max_length=200)
+    reminder_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    reminder_time_zone: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @model_validator(mode="after")
+    def validate_activity_settings(self) -> "ActivityActionSettings":
+        if (self.assignment_kind == "specific") != bool(self.agreed_activity):
+            raise ValueError("A specific assignment requires an agreed activity")
+        if (self.reminder_time is None) != (self.reminder_time_zone is None):
+            raise ValueError("Reminder time and timezone must be supplied together")
+        if self.reminder_time_zone is not None:
+            try:
+                ZoneInfo(self.reminder_time_zone)
+            except ZoneInfoNotFoundError as error:
+                raise ValueError("Reminder timezone must be a valid IANA timezone") from error
+        return self
+
+
+class ActivityAction(StrictModel):
+    id: UUID
+    type: Literal["do_enjoyable_or_meaningful_activity"]
+    state: Literal["active", "paused", "superseded"]
+    recording_id: UUID
+    transcript_version: str
+    candidate_id: str
+    source_ids: list[str]
+    source_excerpt: str
+    agreed_frequency: str | None
+    agreed_timing: str | None
+    agreed_reference_period: str | None
+    activity_mentions: list[ActivityMention]
+    settings: ActivityActionSettings
+    created_at: datetime
+    revision: int = Field(ge=1)
+
+
 class MoodCandidateReviewRequest(StrictModel):
     draft_id: str
     source_version: str
     disposition: Literal["activate", "reject"]
-    settings: RecordMoodActionSettings | None = None
+    settings: RecordMoodActionSettings | ActivityActionSettings | None = None
 
     @model_validator(mode="after")
     def validate_disposition(self) -> "MoodCandidateReviewRequest":
@@ -113,7 +160,7 @@ class MoodCandidateReviewResponse(StrictModel):
     source_version: str
     disposition: Literal["activated", "linked_existing", "rejected"]
     reviewed_at: datetime
-    action: MoodAction | None
+    action: MoodAction | ActivityAction | None
 
 
 class MoodCandidateResolutionResponse(StrictModel):
@@ -129,7 +176,7 @@ class MoodCandidateResolutionResponse(StrictModel):
         "rejected",
         "conflict",
     ]
-    action: MoodAction | None
+    action: MoodAction | ActivityAction | None
     reason: Literal["incompatible_ongoing_action"] | None = None
 
 
@@ -235,7 +282,7 @@ class MoodEntry(StrictModel):
 
 
 class MoodActionListResponse(StrictModel):
-    actions: list[MoodAction]
+    actions: list[MoodAction | ActivityAction]
 
 
 class MoodEntryListResponse(StrictModel):

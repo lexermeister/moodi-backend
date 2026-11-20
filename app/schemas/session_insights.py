@@ -107,6 +107,33 @@ class RecordMoodCandidate(StrictModel):
         return self
 
 
+class ActivityMention(StrictModel):
+    label: str = Field(min_length=1, max_length=200)
+    source_ids: list[str] = Field(min_length=1)
+
+
+class EnjoyableActivityCandidate(StrictModel):
+    id: str
+    type: Literal["do_enjoyable_or_meaningful_activity"]
+    state: Literal["review_ready"]
+    actor: Literal["client"]
+    exact_task: str = Field(min_length=1, max_length=1000)
+    assignment_kind: Literal["general", "specific"]
+    agreed_activity: str | None = Field(default=None, max_length=200)
+    activity_mentions: list[ActivityMention] = Field(default_factory=list)
+    frequency: str | None = Field(default=None, max_length=200)
+    timing: str | None = Field(default=None, max_length=200)
+    reference_period: str | None = Field(default=None, max_length=200)
+    source_excerpt: str
+    source_ids: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_assignment(self) -> "EnjoyableActivityCandidate":
+        if (self.assignment_kind == "specific") != bool(self.agreed_activity):
+            raise ValueError("A specific assignment requires an agreed activity")
+        return self
+
+
 class InsightBullet(StrictModel):
     text: str
     fact_ids: list[str]
@@ -153,7 +180,7 @@ class SessionInsightsResult(StrictModel):
     secondary_variant: InsightVariant | None
     selection_note: str | None
     facts: list[InsightFact]
-    action_candidates: list[RecordMoodCandidate]
+    action_candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate]
     sections: list[InsightSection]
     review_flags: list[InsightReviewFlag]
 
@@ -177,7 +204,7 @@ class SessionInsightsDraftResult(StrictModel):
     secondary_variant: InsightVariant | None
     selection_note: str | None
     facts: list[InsightFact]
-    action_candidates: list[RecordMoodCandidate]
+    action_candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate]
     sections: list[InsightDraftSection]
     review_flags: list[InsightReviewFlag]
 

@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from app.schemas.actions import (
     ActionReviewConfirmationRequest,
     ActionReviewConfirmationResponse,
+    ActivityAction,
+    ActivityActionSettings,
     AmendMoodEntryRequest,
     ConfirmMoodEntryRequest,
     MoodAction,
@@ -24,7 +26,7 @@ from app.schemas.actions import (
     RecordMoodActionSettings,
     SaveMoodEntryDraftRequest,
 )
-from app.schemas.session_insights import RecordMoodCandidate
+from app.schemas.session_insights import EnjoyableActivityCandidate, RecordMoodCandidate
 from app.services.session_insights import CompletedSessionInsights, SessionInsightsService
 
 
@@ -101,6 +103,14 @@ class ActionService:
         )
         if candidate is None:
             raise ActionNotFoundError("Record mood candidate was not found")
+        if isinstance(candidate, EnjoyableActivityCandidate):
+            return self._review_activity_candidate(recording_id, candidate, draft, request)
+        if request.settings is not None and not isinstance(
+            request.settings, RecordMoodActionSettings
+        ):
+            raise ActionValidationError(
+                "Mood settings are required", reason="invalid_settings_type"
+            )
 
         existing = self._load_review(recording_id, candidate_id)
         if existing is not None:
@@ -241,6 +251,99 @@ class ActionService:
         )
         return review
 
+    def _review_activity_candidate(
+        self,
+        recording_id: UUID,
+        candidate: EnjoyableActivityCandidate,
+        draft: CompletedSessionInsights,
+        request: MoodCandidateReviewRequest,
+    ) -> MoodCandidateReviewResponse:
+        existing = self._load_review(recording_id, candidate.id)
+        if existing is not None:
+            if (
+                existing.draft_id != draft.draft_id
+                or existing.source_version != draft.source_version
+            ):
+                raise ActionConflictError(
+                    "The candidate was already reviewed from a different insights draft"
+                )
+            if request.disposition == "reject" and existing.disposition == "rejected":
+                return existing
+            if request.disposition == "activate" and existing.disposition == "activated":
+                if (
+                    not isinstance(request.settings, ActivityActionSettings)
+                    or not isinstance(existing.action, ActivityAction)
+                    or request.settings != existing.action.settings
+                ):
+                    raise ActionConflictError("The activity was activated with different settings")
+                return self._review_with_current_action(existing)
+            raise ActionConflictError("The candidate has already been reviewed")
+
+        reviewed_at = datetime.now(UTC)
+        action: ActivityAction | None = None
+        if request.disposition == "activate":
+            settings = request.settings
+            if not isinstance(settings, ActivityActionSettings):
+                raise ActionValidationError(
+                    "Activity settings are required", reason="invalid_settings_type"
+                )
+            if (
+                settings.exact_task != candidate.exact_task
+                or settings.assignment_kind != candidate.assignment_kind
+                or settings.agreed_activity != candidate.agreed_activity
+            ):
+                raise ActionValidationError(
+                    "The agreed activity cannot be changed during setup",
+                    reason="agreed_assignment_changed",
+                )
+            action_id = uuid5(
+                NAMESPACE_URL,
+                f"moodi:{recording_id}:{draft.source_version}:{candidate.id}",
+            )
+            action = ActivityAction(
+                id=action_id,
+                type="do_enjoyable_or_meaningful_activity",
+                state="active",
+                recording_id=recording_id,
+                transcript_version=draft.source_version,
+                candidate_id=candidate.id,
+                source_ids=candidate.source_ids,
+                source_excerpt=candidate.source_excerpt,
+                agreed_frequency=candidate.frequency,
+                agreed_timing=candidate.timing,
+                agreed_reference_period=candidate.reference_period,
+                activity_mentions=candidate.activity_mentions,
+                settings=settings,
+                created_at=reviewed_at,
+                revision=1,
+            )
+            prior = self._load_action_if_present(action_id)
+            if prior is not None:
+                if (
+                    not isinstance(prior, ActivityAction)
+                    or prior.recording_id != recording_id
+                    or prior.transcript_version != draft.source_version
+                    or prior.candidate_id != candidate.id
+                    or prior.settings != settings
+                ):
+                    raise ActionConflictError("A different Action already uses this candidate")
+                action = prior
+            else:
+                self._atomic_write(self._action_path(action.id), action.model_dump(mode="json"))
+        review = MoodCandidateReviewResponse(
+            recording_id=recording_id,
+            candidate_id=candidate.id,
+            draft_id=draft.draft_id,
+            source_version=draft.source_version,
+            disposition="activated" if action is not None else "rejected",
+            reviewed_at=reviewed_at,
+            action=action,
+        )
+        self._atomic_write(
+            self._review_path(recording_id, candidate.id), review.model_dump(mode="json")
+        )
+        return review
+
     def resolve_candidate(
         self, recording_id: UUID, candidate_id: str
     ) -> MoodCandidateResolutionResponse:
@@ -272,6 +375,16 @@ class ActionService:
                     source_version=draft.source_version,
                     status=review.disposition,
                     action=self._review_with_current_action(review).action,
+                )
+
+            if isinstance(candidate, EnjoyableActivityCandidate):
+                return MoodCandidateResolutionResponse(
+                    recording_id=recording_id,
+                    candidate_id=candidate_id,
+                    draft_id=draft.draft_id,
+                    source_version=draft.source_version,
+                    status="needs_setup",
+                    action=None,
                 )
 
             ongoing_action = self._find_active_ongoing_action()
@@ -409,9 +522,9 @@ class ActionService:
             action_ids.append(action.id)
         return action_ids
 
-    def list_actions(self, recording_id: UUID | None = None) -> list[MoodAction]:
+    def list_actions(self, recording_id: UUID | None = None) -> list[MoodAction | ActivityAction]:
         self._recover_pending_deletions()
-        actions: list[MoodAction] = []
+        actions: list[MoodAction | ActivityAction] = []
         if not self.actions_directory.is_dir():
             return actions
         try:
@@ -419,23 +532,23 @@ class ActionService:
         except OSError as error:
             raise ActionStorageError("Failed to list Actions") from error
         for path in paths:
-            action = self._load_model(path, MoodAction, "Failed to load Action")
+            action = self._load_stored_action(path)
             if recording_id is None or action.recording_id == recording_id:
                 actions.append(action)
         return sorted(actions, key=lambda item: item.created_at, reverse=True)
 
-    def load_action(self, action_id: UUID) -> MoodAction:
+    def load_action(self, action_id: UUID) -> MoodAction | ActivityAction:
         self._recover_pending_deletions()
         action = self._load_action_if_present(action_id)
         if action is None:
             raise ActionNotFoundError("Mood Action was not found")
         return action
 
-    def delete_action(self, action_id: UUID) -> tuple[MoodAction, int]:
+    def delete_action(self, action_id: UUID) -> tuple[MoodAction | ActivityAction, int]:
         with self._mutation_lock:
             return self._delete_action(action_id)
 
-    def _delete_action(self, action_id: UUID) -> tuple[MoodAction, int]:
+    def _delete_action(self, action_id: UUID) -> tuple[MoodAction | ActivityAction, int]:
         self.prepare()
         action = self.load_action(action_id)
         action_path = self._action_path(action_id)
@@ -595,7 +708,10 @@ class ActionService:
         date_from: date | None = None,
         date_to: date | None = None,
     ) -> list[MoodEntry]:
-        self.load_action(action_id)
+        if not isinstance(self.load_action(action_id), MoodAction):
+            raise ActionValidationError(
+                "This Action does not accept mood entries", reason="wrong_action_type"
+            )
         directory = self._entry_directory(action_id)
         if not directory.is_dir():
             return []
@@ -619,7 +735,10 @@ class ActionService:
             self._delete_entry(action_id, entry_id)
 
     def _delete_entry(self, action_id: UUID, entry_id: UUID) -> None:
-        self.load_action(action_id)
+        if not isinstance(self.load_action(action_id), MoodAction):
+            raise ActionValidationError(
+                "This Action does not accept mood entries", reason="wrong_action_type"
+            )
         path = self._entry_path(action_id, entry_id)
         if not path.is_file():
             raise ActionNotFoundError("Mood entry was not found")
@@ -668,11 +787,15 @@ class ActionService:
 
     @staticmethod
     def _validate_values(
-        action: MoodAction,
+        action: MoodAction | ActivityAction,
         values: MoodEntryValues,
         *,
         confirmed: bool,
     ) -> None:
+        if not isinstance(action, MoodAction):
+            raise ActionValidationError(
+                "This Action does not accept mood entries", reason="wrong_action_type"
+            )
         configuration = action.settings.configuration
         if action.settings.start_date and values.relevant_date < action.settings.start_date:
             raise ActionValidationError(
@@ -788,11 +911,24 @@ class ActionService:
             raise ActionNotFoundError("Generate session insights before reviewing Actions")
         return draft
 
-    def _load_action_if_present(self, action_id: UUID) -> MoodAction | None:
+    def _load_action_if_present(self, action_id: UUID) -> MoodAction | ActivityAction | None:
         path = self._action_path(action_id)
         if not path.is_file():
             return None
-        return self._load_model(path, MoodAction, "Failed to load Action")
+        return self._load_stored_action(path)
+
+    @staticmethod
+    def _load_stored_action(path: Path) -> MoodAction | ActivityAction:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            model = (
+                ActivityAction
+                if payload.get("type") == "do_enjoyable_or_meaningful_activity"
+                else MoodAction
+            )
+            return model.model_validate(payload)
+        except Exception as error:
+            raise ActionStorageError("Failed to load Action") from error
 
     def _load_review(
         self, recording_id: UUID, candidate_id: str

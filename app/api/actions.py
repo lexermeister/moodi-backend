@@ -8,6 +8,7 @@ from app.core.logging import get_logger
 from app.schemas.actions import (
     ActionReviewConfirmationRequest,
     ActionReviewConfirmationResponse,
+    ActivityAction,
     AmendMoodEntryRequest,
     ConfirmMoodEntryRequest,
     MoodAction,
@@ -201,8 +202,8 @@ def list_mood_actions(
     return MoodActionListResponse(actions=actions)
 
 
-@router.get("/actions/{action_id}", response_model=MoodAction)
-def get_mood_action(action_id: UUID, request: Request) -> MoodAction:
+@router.get("/actions/{action_id}", response_model=MoodAction | ActivityAction)
+def get_mood_action(action_id: UUID, request: Request) -> MoodAction | ActivityAction:
     try:
         return get_action_service(request).load_action(action_id)
     except (ActionNotFoundError, ActionStorageError) as error:
