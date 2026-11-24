@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 from contextlib import suppress
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -909,7 +910,26 @@ class ActionService:
             raise ActionStorageError("Failed to load session insights") from error
         if draft is None:
             raise ActionNotFoundError("Generate session insights before reviewing Actions")
-        return draft
+        collapsed, duplicate_count = SessionInsightsService._collapse_activity_candidates(
+            draft.result
+        )
+        if duplicate_count == 0:
+            return draft
+        confirmation_path = self.confirmations_directory / f"{recording_id}.json"
+        if confirmation_path.is_file():
+            confirmation = self._load_model(
+                confirmation_path,
+                ActionReviewConfirmationResponse,
+                "Failed to load Action confirmation",
+            )
+            if (
+                confirmation.draft_id == draft.draft_id
+                and confirmation.source_version == draft.source_version
+                and confirmation.candidate_ids
+                == [candidate.id for candidate in draft.result.action_candidates]
+            ):
+                return draft
+        return replace(draft, result=collapsed)
 
     def _load_action_if_present(self, action_id: UUID) -> MoodAction | ActivityAction | None:
         path = self._action_path(action_id)

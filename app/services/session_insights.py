@@ -13,6 +13,7 @@ from uuid import UUID
 
 from app.core.logging import get_logger
 from app.schemas.session_insights import (
+    ActivityMention,
     EnjoyableActivityCandidate,
     InsightDraftBullet,
     InsightDraftSection,
@@ -26,7 +27,7 @@ from app.schemas.session_insights import (
 )
 from app.services.transcript_store import TranscriptStore
 
-SESSION_INSIGHTS_PROMPT_VERSION = "v0.6.3"
+SESSION_INSIGHTS_PROMPT_VERSION = "v0.6.4"
 MAX_GENERATION_ATTEMPTS = 2
 logger = get_logger("services.session_insights")
 
@@ -483,8 +484,6 @@ class SessionInsightsService:
         segments_by_id = {segment["id"]: segment["text"] for segment in segments}
         kept = []
         omitted_ids = set()
-        seen_assignments = set()
-        unsupported_omitted = False
         for candidate in result.action_candidates:
             if not isinstance(candidate, EnjoyableActivityCandidate):
                 kept.append(candidate)
@@ -501,33 +500,56 @@ class SessionInsightsService:
                 )
             ):
                 omitted_ids.add(candidate.id)
-                unsupported_omitted = True
             else:
-                assignment = (
-                    tuple(sorted(candidate.source_ids)),
-                    candidate.assignment_kind,
-                    SessionInsightsService._normalize_excerpt(candidate.agreed_activity or ""),
+                kept.append(candidate)
+        if omitted_ids:
+            result = SessionInsightsService._rewrite_activity_candidates(
+                result, kept, omitted_ids=omitted_ids
+            )
+            result = result.model_copy(
+                update={
+                    "review_flags": [
+                        *result.review_flags,
+                        InsightReviewFlag(
+                            code="missing_action_detail",
+                            detail=(
+                                "An activity action was omitted because its transcript evidence "
+                                "could not be verified."
+                            ),
+                            source_ids=[],
+                            candidate_ids=[],
+                        ),
+                    ]
+                }
+            )
+        collapsed, duplicate_count = SessionInsightsService._collapse_activity_candidates(result)
+        return collapsed, len(omitted_ids) + duplicate_count
+
+    @staticmethod
+    def _rewrite_activity_candidates(
+        result: SessionInsightsResult,
+        candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate],
+        *,
+        replacements: dict[str, str] | None = None,
+        omitted_ids: set[str] | None = None,
+    ) -> SessionInsightsResult:
+        replacements = replacements or {}
+        omitted_ids = omitted_ids or set()
+
+        def rewrite(ids: list[str]) -> list[str]:
+            return list(
+                dict.fromkeys(
+                    replacements.get(identifier, identifier)
+                    for identifier in ids
+                    if identifier not in omitted_ids
                 )
-                if assignment in seen_assignments:
-                    omitted_ids.add(candidate.id)
-                else:
-                    seen_assignments.add(assignment)
-                    kept.append(candidate)
-        if not omitted_ids:
-            return result, 0
+            )
+
         sections = [
             section.model_copy(
                 update={
                     "bullets": [
-                        bullet.model_copy(
-                            update={
-                                "candidate_ids": [
-                                    identifier
-                                    for identifier in bullet.candidate_ids
-                                    if identifier not in omitted_ids
-                                ]
-                            }
-                        )
+                        bullet.model_copy(update={"candidate_ids": rewrite(bullet.candidate_ids)})
                         for bullet in section.bullets
                     ]
                 }
@@ -535,32 +557,57 @@ class SessionInsightsService:
             for section in result.sections
         ]
         flags = [
-            flag.model_copy(
-                update={
-                    "candidate_ids": [
-                        identifier
-                        for identifier in flag.candidate_ids
-                        if identifier not in omitted_ids
-                    ]
-                }
-            )
+            flag.model_copy(update={"candidate_ids": rewrite(flag.candidate_ids)})
             for flag in result.review_flags
         ]
-        if unsupported_omitted:
-            flags.append(
-                InsightReviewFlag(
-                    code="missing_action_detail",
-                    detail=(
-                        "An activity action was omitted because its transcript evidence "
-                        "could not be verified."
-                    ),
-                    source_ids=[],
-                    candidate_ids=[],
-                )
-            )
         return result.model_copy(
-            update={"action_candidates": kept, "sections": sections, "review_flags": flags}
-        ), len(omitted_ids)
+            update={
+                "action_candidates": candidates,
+                "sections": sections,
+                "review_flags": flags,
+            }
+        )
+
+    @staticmethod
+    def _collapse_activity_candidates(
+        result: SessionInsightsResult,
+    ) -> tuple[SessionInsightsResult, int]:
+        first: EnjoyableActivityCandidate | None = None
+        kept: list[RecordMoodCandidate | EnjoyableActivityCandidate] = []
+        replacements: dict[str, str] = {}
+        mentions: list[ActivityMention] = []
+        seen_mentions: set[str] = set()
+
+        def include(mention: ActivityMention) -> None:
+            key = SessionInsightsService._normalize_excerpt(mention.label)
+            if key and key not in seen_mentions:
+                seen_mentions.add(key)
+                mentions.append(mention)
+
+        for candidate in result.action_candidates:
+            if not isinstance(candidate, EnjoyableActivityCandidate):
+                kept.append(candidate)
+                continue
+            if first is None:
+                first = candidate
+                kept.append(candidate)
+            else:
+                replacements[candidate.id] = first.id
+                if candidate.agreed_activity:
+                    include(
+                        ActivityMention(
+                            label=candidate.agreed_activity, source_ids=candidate.source_ids
+                        )
+                    )
+            for mention in candidate.activity_mentions:
+                include(mention)
+        if not replacements or first is None:
+            return result, 0
+        merged = first.model_copy(update={"activity_mentions": mentions})
+        kept = [merged if candidate is first else candidate for candidate in kept]
+        return SessionInsightsService._rewrite_activity_candidates(
+            result, kept, replacements=replacements
+        ), len(replacements)
 
     @staticmethod
     def _validate(result: SessionInsightsResult, input_data: dict[str, object]) -> None:
@@ -582,6 +629,17 @@ class SessionInsightsService:
             raise InsightsValidationError(
                 "Only one combined Record mood candidate is supported",
                 reason="multiple_mood_candidates",
+            )
+        if (
+            sum(
+                isinstance(candidate, EnjoyableActivityCandidate)
+                for candidate in result.action_candidates
+            )
+            > 1
+        ):
+            raise InsightsValidationError(
+                "Only one enjoyable activity candidate is supported",
+                reason="multiple_activity_candidates",
             )
         candidate_ids = [candidate.id for candidate in result.action_candidates]
         if len(fact_ids) != len(set(fact_ids)) or any(
@@ -692,6 +750,7 @@ class SessionInsightsService:
                 "v0.5.1",
                 "v0.6.0",
                 "v0.6.1",
+                "v0.6.3",
             }:
                 return None
             request_fingerprint = payload.pop("request_fingerprint")

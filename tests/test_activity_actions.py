@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -18,7 +19,11 @@ from app.schemas.session_insights import (
     SessionInsightsResult,
 )
 from app.services.actions import ActionConflictError, ActionService, ActionValidationError
-from app.services.session_insights import InsightsValidationError, SessionInsightsService
+from app.services.session_insights import (
+    CompletedSessionInsights,
+    InsightsValidationError,
+    SessionInsightsService,
+)
 from tests.test_session_insights import FakeOpenAIClient, configured_client, upload_recording
 
 
@@ -121,20 +126,51 @@ def test_activity_candidate_requires_real_mention_evidence() -> None:
     assert cleaned.action_candidates[0].activity_mentions == []
 
 
-def test_duplicate_activity_suggestions_are_collapsed() -> None:
+def test_activity_suggestions_with_different_parameters_are_collapsed() -> None:
     first = candidate()
-    duplicate = first.model_copy(update={"id": "C2", "exact_task": "Make time for enjoyment"})
+    duplicate = first.model_copy(
+        update={
+            "id": "C2",
+            "exact_task": "Draw something every day",
+            "source_ids": ["S3", "S4"],
+            "source_excerpt": "Draw something every day",
+            "assignment_kind": "specific",
+            "agreed_activity": "Draw",
+            "frequency": "every day",
+            "reference_period": "daily",
+            "activity_mentions": [ActivityMention(label="Draw", source_ids=["S3"])],
+        }
+    )
+    third = first.model_copy(
+        update={
+            "id": "C3",
+            "exact_task": "Make time for enjoyment",
+            "source_ids": ["S5", "S6"],
+            "source_excerpt": "Make time for enjoyment",
+            "frequency": "next week",
+            "reference_period": "next week",
+        }
+    )
+    fourth = first.model_copy(
+        update={
+            "id": "C4",
+            "exact_task": "Find a meaningful activity",
+            "source_ids": ["S7", "S8"],
+            "source_excerpt": "Find a meaningful activity",
+            "timing": "in the evening",
+        }
+    )
     generated = result(first)
     generated = generated.model_copy(
         update={
-            "action_candidates": [first, duplicate],
+            "action_candidates": [first, duplicate, third, fourth],
             "sections": [
                 generated.sections[0].model_copy(
                     update={
                         "bullets": [
                             generated.sections[0]
                             .bullets[0]
-                            .model_copy(update={"candidate_ids": ["C1", "C2"]})
+                            .model_copy(update={"candidate_ids": ["C1", "C2", "C3", "C4"]})
                         ]
                     }
                 )
@@ -147,13 +183,69 @@ def test_duplicate_activity_suggestions_are_collapsed() -> None:
             "segments": [
                 {"id": "S1", "text": "Do something enjoyable this week"},
                 {"id": "S2", "text": "Yes, I will"},
+                {"id": "S3", "text": "Draw something every day"},
+                {"id": "S4", "text": "Yes, drawing sounds good"},
+                {"id": "S5", "text": "Make time for enjoyment"},
+                {"id": "S6", "text": "Okay"},
+                {"id": "S7", "text": "Find a meaningful activity"},
+                {"id": "S8", "text": "I can do that"},
             ]
         },
     )
-    assert omitted == 1
+    assert omitted == 3
     assert [item.id for item in cleaned.action_candidates] == ["C1"]
     assert cleaned.sections[0].bullets[0].candidate_ids == ["C1"]
+    assert [mention.label for mention in cleaned.action_candidates[0].activity_mentions] == [
+        "Call a friend",
+        "Draw",
+    ]
     assert not cleaned.review_flags
+    with pytest.raises(InsightsValidationError, match="one enjoyable activity"):
+        SessionInsightsService._validate(
+            generated,
+            {
+                "session_id": "session",
+                "source_version": "source",
+                "segments": [],
+            },
+        )
+
+
+def test_older_activity_draft_requires_review_of_only_one_candidate(tmp_path: Path) -> None:
+    recording_id = uuid4()
+    first = candidate()
+    duplicate = first.model_copy(update={"id": "C2", "frequency": "daily"})
+    draft = CompletedSessionInsights(
+        recording_id=recording_id,
+        draft_id="old-draft",
+        source_version="source",
+        prompt_version="v0.6.3",
+        model="test",
+        request_fingerprint="fingerprint",
+        generated_at=datetime.now(UTC),
+        result=result(first).model_copy(update={"action_candidates": [first, duplicate]}),
+    )
+    service = ActionService(tmp_path, SimpleNamespace(load_completed=lambda _: draft))
+    assert [
+        item.id for item in service._load_current_draft(recording_id).result.action_candidates
+    ] == ["C1"]
+    service.review_candidate(
+        recording_id,
+        "C1",
+        MoodCandidateReviewRequest(
+            draft_id="old-draft",
+            source_version="source",
+            disposition="reject",
+        ),
+    )
+    confirmation = service.confirm_action_reviews(
+        recording_id,
+        ActionReviewConfirmationRequest(
+            draft_id="old-draft",
+            source_version="source",
+        ),
+    )
+    assert confirmation.candidate_ids == ["C1"]
 
 
 def test_specific_activity_can_be_paraphrased_when_source_quote_is_exact() -> None:

@@ -256,7 +256,7 @@ def test_insights_are_structured_saved_and_cached(
     assert payload["recording_id"] == recording["id"]
     assert payload["draft_id"].startswith("sha256:")
     assert payload["source_version"].startswith("sha256:")
-    assert payload["prompt_version"] == "v0.6.3"
+    assert payload["prompt_version"] == "v0.6.4"
     assert payload["model"] == "gpt-6-luna"
     assert payload["result"]["status"] == "draft"
     assert payload["result"]["sections"][0]["heading"] == "Today's focus"
@@ -326,7 +326,7 @@ def test_stale_prompt_cache_is_regenerated(
     regenerated = insights_client.post(endpoint, json={})
 
     assert regenerated.status_code == 200
-    assert regenerated.json()["prompt_version"] == "v0.6.3"
+    assert regenerated.json()["prompt_version"] == "v0.6.4"
     assert fake_openai.responses.insights_call_count == 2
 
 

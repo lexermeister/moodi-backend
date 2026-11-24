@@ -684,6 +684,11 @@ the backend to use an editable transcript instead of speech-to-text. Copy
 `examples/dev-transcript.json` to that path first. This mode requires
 `APP_ENV=development`.
 
+The example includes several possible enjoyable activities but one general agreement to
+choose an activity, plus a separate agreement to record mood. It should yield one
+enjoyable activity candidate and one Record mood candidate. The activity review should
+show no specific activity or schedule.
+
 Edit the JSON `turns` list using `role` (`therapist` or `client`) and `text`.
 Both roles must appear and text must be non-empty. Record any short clip normally:
 upload stays unchanged, but transcription uses the file. The file is read again
