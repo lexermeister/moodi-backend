@@ -20,6 +20,7 @@ from app.schemas.actions import (
     MoodEntryExportRequest,
     MoodEntryExportResponse,
     MoodEntryListResponse,
+    PracticeAction,
     SaveMoodEntryDraftRequest,
 )
 from app.services.actions import (
@@ -202,8 +203,10 @@ def list_mood_actions(
     return MoodActionListResponse(actions=actions)
 
 
-@router.get("/actions/{action_id}", response_model=MoodAction | ActivityAction)
-def get_mood_action(action_id: UUID, request: Request) -> MoodAction | ActivityAction:
+@router.get("/actions/{action_id}", response_model=MoodAction | ActivityAction | PracticeAction)
+def get_mood_action(
+    action_id: UUID, request: Request
+) -> MoodAction | ActivityAction | PracticeAction:
     try:
         return get_action_service(request).load_action(action_id)
     except (ActionNotFoundError, ActionStorageError) as error:

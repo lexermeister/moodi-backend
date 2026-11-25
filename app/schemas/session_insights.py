@@ -134,6 +134,23 @@ class EnjoyableActivityCandidate(StrictModel):
         return self
 
 
+class PracticeCandidate(StrictModel):
+    id: str
+    type: Literal["practise_relaxation_breathing"]
+    state: Literal["review_ready"]
+    actor: Literal["client"]
+    exact_task: str = Field(min_length=1, max_length=1000)
+    technique: str | None = Field(default=None, max_length=500)
+    resource_url: str | None = Field(default=None, max_length=2000)
+    duration_minutes: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    repetitions: str | None = Field(default=None, max_length=200)
+    limits: str | None = Field(default=None, max_length=1000)
+    frequency: str | None = Field(default=None, max_length=200)
+    timing: str | None = Field(default=None, max_length=200)
+    source_excerpt: str
+    source_ids: list[str] = Field(min_length=1)
+
+
 class InsightBullet(StrictModel):
     text: str
     fact_ids: list[str]
@@ -180,7 +197,7 @@ class SessionInsightsResult(StrictModel):
     secondary_variant: InsightVariant | None
     selection_note: str | None
     facts: list[InsightFact]
-    action_candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate]
+    action_candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate | PracticeCandidate]
     sections: list[InsightSection]
     review_flags: list[InsightReviewFlag]
 
@@ -204,7 +221,7 @@ class SessionInsightsDraftResult(StrictModel):
     secondary_variant: InsightVariant | None
     selection_note: str | None
     facts: list[InsightFact]
-    action_candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate]
+    action_candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate | PracticeCandidate]
     sections: list[InsightDraftSection]
     review_flags: list[InsightReviewFlag]
 

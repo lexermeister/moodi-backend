@@ -9,6 +9,7 @@ from app.api import (
     activity_attempts,
     demo_reset,
     health,
+    practice_attempts,
     recordings,
     session_insights,
     session_insights_review,
@@ -18,6 +19,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.services.actions import ActionService
 from app.services.activity_attempts import ActivityAttemptService
+from app.services.practice_attempts import PracticeAttemptService
 from app.services.recording_storage import RecordingStorage
 from app.services.session_insights import SessionInsightsService
 from app.services.session_insights_review import SessionInsightsReviewService
@@ -80,6 +82,9 @@ def create_app(
         application.state.activity_attempt_service = ActivityAttemptService(
             application_settings.recordings_path, action_service
         )
+        application.state.practice_attempt_service = PracticeAttemptService(
+            application_settings.recordings_path, action_service
+        )
         logger.info(
             "application_started app_env=%s recordings_dir=%s max_upload_mb=%s "
             "transcription_model=%s role_attribution_model=%s insights_model=%s "
@@ -107,6 +112,7 @@ def create_app(
     application.include_router(session_insights_review.router)
     application.include_router(actions.router)
     application.include_router(activity_attempts.router)
+    application.include_router(practice_attempts.router)
     application.include_router(demo_reset.router)
     return application
 

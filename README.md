@@ -35,6 +35,8 @@ worker, reminders, or clinical-record integration.
 - `GET` and `PUT /recordings/{recording_id}/insights/review` for a separate client-reviewed layer.
 - Reviewable Record mood Actions with dated drafts, confirmed entries, history, export, and
   permanent cascade deletion.
+- Reviewable relaxation/breathing practice Actions with daily/no-time defaults, optional
+  duration and tension ratings, resumable drafts, confirmed outcomes, and amendment history.
 - Idempotent transcript and insight generation backed by versioned local artifacts.
 - Application-side validation of model-generated evidence and cross references.
 - Provider-error handling that does not expose OpenAI error details.
@@ -74,6 +76,12 @@ tests/                     Automated tests
 Dockerfile                 Production container image
 compose.yaml               Local container setup and recordings volume
 ```
+
+Insights provider calls use a 60-second read timeout, short connection/write timeouts, and no
+SDK retries. One evidence-validation retry may still occur. A provider timeout returns `504`
+before the mobile app's 180-second wait expires; concurrent requests for the same recording
+return `409` instead of starting duplicate model calls. Provider logs include a generated
+`client_request_id` and the returned provider request ID when available, without source text.
 
 ## Configuration
 
@@ -157,6 +165,27 @@ Successful response (`200`):
   "status": "ok"
 }
 ```
+
+### Relaxation/breathing practice
+
+Session insights can suggest `practise_relaxation_breathing` for an agreed future practice.
+The existing candidate review and Action confirmation endpoints activate or reject it. Reviewed
+settings preserve the assigned technique, instructions, resource, duration/repetitions and limits;
+unspecified frequency defaults to `Every day`, with no reminder time or invented duration.
+
+- `GET /actions/{action_id}/practice-attempts` lists drafts and confirmed attempts.
+- `GET /actions/{action_id}/practice-attempts/{attempt_id}` reads one attempt.
+- `PUT /actions/{action_id}/practice-attempts/{attempt_id}` creates, saves or amends an attempt.
+
+Use a stable client UUID per attempt, `action_revision`, and `expected_revision` (`0` for a new
+attempt). Repeating the same payload returns the saved revision. Changed payloads require the
+current revision; stale writes return `409`. Confirmed records retain revision history.
+
+A log requires `status` (`draft` or `confirmed`) and `relevant_date`. Confirmation additionally
+requires an explicit outcome: `completed`, `partly_completed`, `skipped`, or `stopped_early`.
+Actual minutes, 0–10 tension ratings and notes are optional; missing ratings differ from zero.
+Timer metadata stays separate from user-reported duration, and elapsed time never confirms a
+practice. Action deletion also removes practice drafts, outcomes, and revisions.
 
 ### Upload a recording
 
@@ -685,9 +714,12 @@ the backend to use an editable transcript instead of speech-to-text. Copy
 `APP_ENV=development`.
 
 The example includes several possible enjoyable activities but one general agreement to
-choose an activity, plus a separate agreement to record mood. It should yield one
-enjoyable activity candidate and one Record mood candidate. The activity review should
-show no specific activity or schedule.
+choose an activity, a separate agreement to record mood, and an explicit agreement to repeat
+the therapist's breathing exercise for three minutes every day after work, without a clock-time
+reminder. Mood recording includes energy, sleep quality, and motivation. It should
+yield one enjoyable activity candidate, one Record mood candidate, and one breathing practice
+candidate. The activity review should show no specific activity or schedule. Breathing tension
+ratings remain optional, and no resource link is invented.
 
 Edit the JSON `turns` list using `role` (`therapist` or `client`) and `text`.
 Both roles must appear and text must be non-empty. Record any short clip normally:
@@ -705,3 +737,12 @@ the tracked example file.
 To restore normal transcription, remove or empty `TRANSCRIPTION_FIXTURE_PATH` and
 restart the backend. Tests disable the local override unless explicitly configured.
 
+
+## Evaluate action-extraction prompts
+
+`uv run python -m scripts.evaluate_action_prompt --repeats 2` evaluates the configured model
+against ten fictional cases in `examples/action-prompt-eval.json`. It checks raw model output
+before application recovery or filtering, including mood versus breathing classification,
+independent agreements, declined/in-session practice, duplicates, and transcript references.
+This explicit evaluation makes paid API calls with synthetic data only and does not read or
+write saved sessions. Automated pytest coverage continues to use provider mocks.

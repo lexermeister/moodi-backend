@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from threading import Lock
 from time import monotonic
 from typing import Protocol
 from uuid import UUID
@@ -19,6 +20,7 @@ from app.schemas.session_insights import (
     InsightDraftSection,
     InsightReviewFlag,
     MoodScaleDefinition,
+    PracticeCandidate,
     RecordMoodCandidate,
     RecordMoodConfiguration,
     SessionInsightsDraftResult,
@@ -27,7 +29,7 @@ from app.schemas.session_insights import (
 )
 from app.services.transcript_store import TranscriptStore
 
-SESSION_INSIGHTS_PROMPT_VERSION = "v0.6.4"
+SESSION_INSIGHTS_PROMPT_VERSION = "v0.8.0"
 MAX_GENERATION_ATTEMPTS = 2
 logger = get_logger("services.session_insights")
 
@@ -59,6 +61,14 @@ class InsightsProviderError(SessionInsightsError):
         self.provider_error_type = provider_error_type
         self.status_code = status_code
         self.request_id = request_id
+
+
+class InsightsTimeoutError(InsightsProviderError):
+    """The provider did not complete within the synchronous request budget."""
+
+
+class InsightsInProgressError(SessionInsightsError):
+    """A request is already generating insights for this recording."""
 
 
 class InsightsValidationError(SessionInsightsError):
@@ -155,8 +165,27 @@ class SessionInsightsService:
         self.transcript_store = transcript_store
         self.generator = generator
         self.prompt = prompt_path.read_text(encoding="utf-8")
+        self._in_progress: set[UUID] = set()
+        self._in_progress_lock = Lock()
 
     def generate(
+        self,
+        recording_id: UUID,
+        session_date: date | None,
+    ) -> CompletedSessionInsights:
+        with self._in_progress_lock:
+            if recording_id in self._in_progress:
+                raise InsightsInProgressError(
+                    "Session insights are already being generated. Try again shortly."
+                )
+            self._in_progress.add(recording_id)
+        try:
+            return self._generate(recording_id, session_date)
+        finally:
+            with self._in_progress_lock:
+                self._in_progress.discard(recording_id)
+
+    def _generate(
         self,
         recording_id: UUID,
         session_date: date | None,
@@ -528,7 +557,7 @@ class SessionInsightsService:
     @staticmethod
     def _rewrite_activity_candidates(
         result: SessionInsightsResult,
-        candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate],
+        candidates: list[RecordMoodCandidate | EnjoyableActivityCandidate | PracticeCandidate],
         *,
         replacements: dict[str, str] | None = None,
         omitted_ids: set[str] | None = None,
@@ -573,7 +602,7 @@ class SessionInsightsService:
         result: SessionInsightsResult,
     ) -> tuple[SessionInsightsResult, int]:
         first: EnjoyableActivityCandidate | None = None
-        kept: list[RecordMoodCandidate | EnjoyableActivityCandidate] = []
+        kept: list[RecordMoodCandidate | EnjoyableActivityCandidate | PracticeCandidate] = []
         replacements: dict[str, str] = {}
         mentions: list[ActivityMention] = []
         seen_mentions: set[str] = set()
@@ -751,6 +780,9 @@ class SessionInsightsService:
                 "v0.6.0",
                 "v0.6.1",
                 "v0.6.3",
+                "v0.6.4",
+                "v0.7.0",
+                "v0.7.1",
             }:
                 return None
             request_fingerprint = payload.pop("request_fingerprint")

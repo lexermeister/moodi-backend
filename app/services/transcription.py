@@ -4,20 +4,28 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from openai import OpenAI
+import httpx
+from openai import APITimeoutError, OpenAI
 from pydantic import BaseModel
 
 from app.core.logging import get_logger
 from app.schemas.session_insights import SessionInsightsResult
-from app.services.session_insights import InsightsNotConfiguredError, InsightsProviderError
+from app.services.session_insights import (
+    InsightsNotConfiguredError,
+    InsightsProviderError,
+    InsightsTimeoutError,
+)
 from app.services.transcript_store import (
     CompletedTranscription,
     SourceSpeaker,
     TranscriptStore,
     TranscriptTurn,
 )
+
+# Two evidence-validation attempts must fit inside the mobile 180-second deadline.
+INSIGHTS_PROVIDER_TIMEOUT = httpx.Timeout(60.0, connect=5.0, write=5.0, pool=5.0)
 
 OPENAI_MAX_FILE_BYTES = 25 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {".m4a", ".wav"}
@@ -212,10 +220,14 @@ class OpenAISessionInsightsGenerator:
     ) -> SessionInsightsResult:
         client = self._get_client()
         started_at = monotonic()
+        client_request_id = str(uuid4())
         logger.info(
-            "insights_provider_started recording_id=%s model=%s",
+            "insights_provider_started recording_id=%s model=%s client_request_id=%s "
+            "timeout_seconds=%s",
             recording_id,
             self.model,
+            client_request_id,
+            INSIGHTS_PROVIDER_TIMEOUT.read,
         )
         source_data = json.dumps(input_data, ensure_ascii=False, separators=(",", ":"))
 
@@ -235,9 +247,25 @@ class OpenAISessionInsightsGenerator:
                 ],
                 text_format=SessionInsightsResult,
                 store=False,
+                timeout=INSIGHTS_PROVIDER_TIMEOUT,
+                extra_headers={"X-Client-Request-Id": client_request_id},
             )
         except Exception as error:
-            raise InsightsProviderError(
+            timed_out = isinstance(error, (APITimeoutError, httpx.TimeoutException, TimeoutError))
+            logger.error(
+                "%s recording_id=%s model=%s client_request_id=%s "
+                "provider_error_type=%s status_code=%s request_id=%s duration_ms=%s",
+                "insights_provider_timeout" if timed_out else "insights_provider_error",
+                recording_id,
+                self.model,
+                client_request_id,
+                type(error).__name__,
+                getattr(error, "status_code", None),
+                getattr(error, "request_id", None),
+                round((monotonic() - started_at) * 1000),
+            )
+            error_class = InsightsTimeoutError if timed_out else InsightsProviderError
+            raise error_class(
                 "OpenAI session insights generation failed",
                 provider_error_type=type(error).__name__,
                 status_code=getattr(error, "status_code", None),
@@ -253,9 +281,12 @@ class OpenAISessionInsightsGenerator:
             )
 
         logger.info(
-            "insights_provider_completed recording_id=%s model=%s duration_ms=%s",
+            "insights_provider_completed recording_id=%s model=%s client_request_id=%s "
+            "request_id=%s duration_ms=%s",
             recording_id,
             self.model,
+            client_request_id,
+            getattr(response, "_request_id", None),
             round((monotonic() - started_at) * 1000),
         )
         return result
@@ -266,7 +297,7 @@ class OpenAISessionInsightsGenerator:
         if not self.api_key:
             raise InsightsNotConfiguredError("OpenAI session insights are not configured")
 
-        self.client = OpenAI(api_key=self.api_key)
+        self.client = OpenAI(api_key=self.api_key, timeout=INSIGHTS_PROVIDER_TIMEOUT, max_retries=0)
         return self.client
 
 

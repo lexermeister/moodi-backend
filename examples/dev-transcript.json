@@ -1,34 +1,160 @@
 {
   "turns": [
-    {"role": "client", "text": "I keep thinking about work long after I close my laptop. By dinner I feel flat, and I am still waiting for another message to come in."},
-    {"role": "therapist", "text": "What tends to happen between finishing work and sitting down for dinner?"},
-    {"role": "client", "text": "I usually check my phone. If there is a late message, I read it straight away and start planning a reply, even if it can wait until morning."},
-    {"role": "therapist", "text": "You mentioned one evening that felt a little different. What do you remember about it?"},
-    {"role": "client", "text": "On Tuesday I put on some music while making dinner. I did not suddenly feel great, but I was less caught up in work for a while."},
-    {"role": "therapist", "text": "It sounds as though having something of your own in the evening mattered to you. What else might feel enjoyable or meaningful?"},
-    {"role": "client", "text": "I could call my sister on Saturday. We have not spoken properly in a while, and I usually enjoy talking with her."},
-    {"role": "client", "text": "I could also draw for ten minutes after work. I used to do that a lot, but I have not picked up my sketchbook recently."},
-    {"role": "client", "text": "Listening to a whole album one evening sounds nice too. Or I might take a short walk at lunchtime if the weather is good."},
-    {"role": "therapist", "text": "Of those ideas, is there one you want to commit to now?"},
-    {"role": "client", "text": "Not a particular one. Calling my sister would feel meaningful, drawing would be fun, and a walk might be easier on a busy day. I would rather decide when I see how the week goes."},
-    {"role": "therapist", "text": "We could set aside ten minutes on Tuesday, or leave it for the weekend. How would you like to approach it?"},
-    {"role": "client", "text": "Those are possibilities, but I do not want to promise Tuesday, the weekend, or a set number of minutes."},
-    {"role": "therapist", "text": "Would you be willing to make time for one enjoyable or meaningful activity this week, with the choice left open?"},
-    {"role": "client", "text": "Yes. I will make time for one thing I enjoy or find meaningful this week. I will choose what it is when I am ready, rather than trying to do all four ideas."},
-    {"role": "therapist", "text": "So we have not agreed that you specifically need to call, draw, listen to music, or walk?"},
-    {"role": "client", "text": "Right. Those are ideas, not four separate tasks. I am agreeing to one activity of my choice."},
-    {"role": "therapist", "text": "What might make that difficult?"},
-    {"role": "client", "text": "Late work messages can swallow the evening. Thursday is also busy because I pick up my niece, so I do not want this to become another rigid appointment."},
-    {"role": "therapist", "text": "We can keep that flexibility in mind. Would it be useful to record your mood as well, to notice how your days feel?"},
-    {"role": "client", "text": "Yes, I will record my mood each evening around eight, thinking about the whole day rather than just the last hour."},
-    {"role": "therapist", "text": "How would you like to rate it?"},
-    {"role": "client", "text": "I can use zero to ten, with zero as my worst day and ten as my best day."},
-    {"role": "therapist", "text": "You also mentioned noticing your energy. Do you want that in the check-in?"},
-    {"role": "client", "text": "I can add an energy rating if I feel like it, but mood is the part I definitely want to record."},
-    {"role": "therapist", "text": "A short journal might be another option to talk about later. Do you want to start that now?"},
-    {"role": "client", "text": "No, not now. Maybe we can talk about it at another session."},
-    {"role": "therapist", "text": "What would you like us to look at next time?"},
-    {"role": "client", "text": "I would like to notice whether the evenings feel any different when I give myself a little space after work. We can look at that together next time."},
-    {"role": "therapist", "text": "Yes, we can compare what you noticed then."}
+    {
+      "role": "therapist",
+      "text": "How have your evenings been since we last spoke?"
+    },
+    {
+      "role": "client",
+      "text": "Work keeps following me home. Even after I close the laptop, I’m thinking about what I missed or what someone might ask me tomorrow."
+    },
+    {
+      "role": "therapist",
+      "text": "What do you usually do when those thoughts show up?"
+    },
+    {
+      "role": "client",
+      "text": "Check my phone. Sometimes there isn’t even a message. I just look anyway, and then the evening disappears."
+    },
+    {
+      "role": "therapist",
+      "text": "Have there been any evenings that felt different?"
+    },
+    {
+      "role": "client",
+      "text": "On Tuesday I put an album on while making dinner. I still thought about work, but I enjoyed parts of the evening. I also spoke to my sister on Sunday, which felt good."
+    },
+    {
+      "role": "therapist",
+      "text": "What was meaningful about that conversation?"
+    },
+    {
+      "role": "client",
+      "text": "We weren’t solving anything. We were just catching up. It reminded me that there are things in my life besides work."
+    },
+    {
+      "role": "therapist",
+      "text": "What other things would you like to make room for?"
+    },
+    {
+      "role": "client",
+      "text": "Drawing, perhaps. I used to keep a sketchbook. A short walk could be nice too, especially when I’ve spent the whole day indoors."
+    },
+    {
+      "role": "therapist",
+      "text": "Would you like to choose one of those now, or leave the choice open?"
+    },
+    {
+      "role": "client",
+      "text": "Leave it open. Calling my sister, drawing, listening to music, and walking all sound possible. What feels right will depend on the day."
+    },
+    {
+      "role": "therapist",
+      "text": "How about making space for one enjoyable or meaningful activity before our next session?"
+    },
+    {
+      "role": "client",
+      "text": "I’m up for giving that a go. I’ll make time for one thing this week and choose the activity when I’m ready."
+    },
+    {
+      "role": "therapist",
+      "text": "Would setting a particular day help?"
+    },
+    {
+      "role": "client",
+      "text": "I’d rather keep it flexible. Thursday is busy because I pick up my niece. I don’t want to turn all those ideas into separate tasks."
+    },
+    {
+      "role": "therapist",
+      "text": "One activity of your choice, with the day left open."
+    },
+    {
+      "role": "client",
+      "text": "Exactly. That feels doable."
+    },
+    {
+      "role": "therapist",
+      "text": "You’ve also said it’s difficult to remember how the week felt when you get here. Would recording your mood help you look back?"
+    },
+    {
+      "role": "client",
+      "text": "Let’s do that. I’ll log my mood each evening around eight, thinking about the day as a whole."
+    },
+    {
+      "role": "therapist",
+      "text": "What rating format would you use?"
+    },
+    {
+      "role": "client",
+      "text": "Zero to ten makes sense to me. Zero would be my worst day, and ten my best."
+    },
+    {
+      "role": "therapist",
+      "text": "You mentioned low energy earlier. Would you like to record that too?"
+    },
+    {
+      "role": "client",
+      "text": "Yes, include energy. I’d also like to track my sleep quality and motivation alongside mood. I want to see what I notice over the week."
+    },
+    {
+      "role": "therapist",
+      "text": "We also practised a breathing exercise together today. What was that experience like for you?"
+    },
+    {
+      "role": "client",
+      "text": "My mind wandered, but I could come back to it. I noticed my shoulders felt less tight afterward."
+    },
+    {
+      "role": "therapist",
+      "text": "Would you like to repeat that same exercise between sessions?"
+    },
+    {
+      "role": "client",
+      "text": "That sounds manageable. I’ll practise the breathing exercise we did today for three minutes each day."
+    },
+    {
+      "role": "therapist",
+      "text": "Is there a time that would fit?"
+    },
+    {
+      "role": "client",
+      "text": "After I finish work would be a useful point to try it. I don’t need a reminder at a particular clock time."
+    },
+    {
+      "role": "therapist",
+      "text": "Would you like to note your tension before and afterward, or simply record how the practice went?"
+    },
+    {
+      "role": "client",
+      "text": "I can add the tension ratings when I feel like it. Some days I might just write a few words about what happened."
+    },
+    {
+      "role": "therapist",
+      "text": "Do you have a recording of the exercise?"
+    },
+    {
+      "role": "client",
+      "text": "No, but I remember the one we practised. I’ll use that."
+    },
+    {
+      "role": "therapist",
+      "text": "We also mentioned journaling earlier. Is that something you want to start now?"
+    },
+    {
+      "role": "client",
+      "text": "Not this week. I already have enough to work with."
+    },
+    {
+      "role": "therapist",
+      "text": "What would you like to revisit next time?"
+    },
+    {
+      "role": "client",
+      "text": "How the evenings felt, whether I made room for something I enjoyed, and what I noticed when I tried the breathing practice. The mood entries should help me remember."
+    },
+    {
+      "role": "therapist",
+      "text": "We can start there next time."
+    }
   ]
 }

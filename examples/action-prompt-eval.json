@@ -1,0 +1,88 @@
+[
+  {
+    "name": "mood_only_yes_commitment",
+    "turns": [
+      {"role": "therapist", "text": "Would you like to keep a daily mood log?"},
+      {"role": "client", "text": "Yes, I will track my mood every evening, for the day overall."}
+    ],
+    "expected_types": ["record_mood"]
+  },
+  {
+    "name": "mood_with_optional_measurements",
+    "turns": [
+      {"role": "client", "text": "I will record my mood each night. I can add an energy rating too."}
+    ],
+    "expected_types": ["record_mood"],
+    "expected_measurements": ["mood", "energy"]
+  },
+  {
+    "name": "breathing_only",
+    "turns": [
+      {"role": "therapist", "text": "Will you repeat the breathing exercise we learned for three minutes after lunch?"},
+      {"role": "client", "text": "Yes, I will repeat that exercise after lunch."}
+    ],
+    "expected_types": ["practise_relaxation_breathing"],
+    "expected_practice_minutes": 3
+  },
+  {
+    "name": "past_breathing_future_mood",
+    "turns": [
+      {"role": "client", "text": "I tried breathing exercises last year. I do not want to repeat them now."},
+      {"role": "client", "text": "I will write down my mood each evening instead."}
+    ],
+    "expected_types": ["record_mood"]
+  },
+  {
+    "name": "relaxing_enjoyable_activity",
+    "turns": [
+      {"role": "therapist", "text": "Could you make time for something enjoyable this week?"},
+      {"role": "client", "text": "Yes, I will choose something enjoyable this week. Gardening feels relaxing, so that is one idea."}
+    ],
+    "expected_types": ["do_enjoyable_or_meaningful_activity"]
+  },
+  {
+    "name": "independent_mood_and_practice",
+    "turns": [
+      {"role": "client", "text": "I will record my mood each evening and repeat the muscle relaxation exercise we learned."}
+    ],
+    "expected_types": ["record_mood", "practise_relaxation_breathing"],
+    "expected_practice_minutes": null
+  },
+  {
+    "name": "three_separate_agreements",
+    "turns": [
+      {"role": "client", "text": "I will record my mood each night."},
+      {"role": "therapist", "text": "Would you also make time for something enjoyable?"},
+      {"role": "client", "text": "Yes, I will choose an enjoyable activity this week."},
+      {"role": "therapist", "text": "And will you repeat the breathing practice we did today?"},
+      {"role": "client", "text": "Yes, I will repeat that breathing practice."}
+    ],
+    "expected_types": ["record_mood", "do_enjoyable_or_meaningful_activity", "practise_relaxation_breathing"]
+  },
+  {
+    "name": "declined_breathing",
+    "turns": [
+      {"role": "therapist", "text": "Would you practise the breathing exercise at home?"},
+      {"role": "client", "text": "No, I do not want to practise that at home."}
+    ],
+    "expected_types": []
+  },
+  {
+    "name": "in_session_practice_only",
+    "turns": [
+      {"role": "therapist", "text": "We practised breathing in today's session. How was it?"},
+      {"role": "client", "text": "It was fine. I have not decided on anything to practise at home."}
+    ],
+    "expected_types": []
+  },
+  {
+    "name": "restated_same_practice",
+    "turns": [
+      {"role": "therapist", "text": "Will you repeat the muscle relaxation practice?"},
+      {"role": "client", "text": "Yes, I will repeat that practice."},
+      {"role": "therapist", "text": "So we agreed on that same muscle relaxation practice."},
+      {"role": "client", "text": "Yes, that is the same plan."}
+    ],
+    "expected_types": ["practise_relaxation_breathing"]
+  }
+]

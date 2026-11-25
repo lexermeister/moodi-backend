@@ -138,11 +138,40 @@ class ActivityAction(StrictModel):
     revision: int = Field(ge=1)
 
 
+class PracticeActionSettings(StrictModel):
+    exact_task: str = Field(min_length=1, max_length=1000)
+    technique: str | None = Field(default=None, max_length=500)
+    resource_url: str | None = Field(default=None, max_length=2000)
+    duration_minutes: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    repetitions: str | None = Field(default=None, max_length=200)
+    limits: str | None = Field(default=None, max_length=1000)
+    frequency: str = Field(default="Every day", min_length=1, max_length=200)
+    timing: str | None = Field(default=None, max_length=200)
+    reminder_time: None = None
+    reminder_time_zone: None = None
+
+
+class PracticeAction(StrictModel):
+    id: UUID
+    type: Literal["practise_relaxation_breathing"]
+    state: Literal["active", "paused", "superseded"]
+    recording_id: UUID
+    transcript_version: str
+    candidate_id: str
+    source_ids: list[str]
+    source_excerpt: str
+    settings: PracticeActionSettings
+    created_at: datetime
+    revision: int = Field(ge=1)
+
+
 class MoodCandidateReviewRequest(StrictModel):
     draft_id: str
     source_version: str
     disposition: Literal["activate", "reject"]
-    settings: RecordMoodActionSettings | ActivityActionSettings | None = None
+    settings: RecordMoodActionSettings | ActivityActionSettings | PracticeActionSettings | None = (
+        None
+    )
 
     @model_validator(mode="after")
     def validate_disposition(self) -> "MoodCandidateReviewRequest":
@@ -160,7 +189,7 @@ class MoodCandidateReviewResponse(StrictModel):
     source_version: str
     disposition: Literal["activated", "linked_existing", "rejected"]
     reviewed_at: datetime
-    action: MoodAction | ActivityAction | None
+    action: MoodAction | ActivityAction | PracticeAction | None
 
 
 class MoodCandidateResolutionResponse(StrictModel):
@@ -176,7 +205,7 @@ class MoodCandidateResolutionResponse(StrictModel):
         "rejected",
         "conflict",
     ]
-    action: MoodAction | ActivityAction | None
+    action: MoodAction | ActivityAction | PracticeAction | None
     reason: Literal["incompatible_ongoing_action"] | None = None
 
 
@@ -282,7 +311,7 @@ class MoodEntry(StrictModel):
 
 
 class MoodActionListResponse(StrictModel):
-    actions: list[MoodAction | ActivityAction]
+    actions: list[MoodAction | ActivityAction | PracticeAction]
 
 
 class MoodEntryListResponse(StrictModel):

@@ -7,9 +7,11 @@ from app.core.logging import get_logger
 from app.schemas.session_insights import SessionInsightsRequest, SessionInsightsResponse
 from app.services.recording_storage import RecordingNotFoundError, RecordingStorage
 from app.services.session_insights import (
+    InsightsInProgressError,
     InsightsNotConfiguredError,
     InsightsProviderError,
     InsightsStorageError,
+    InsightsTimeoutError,
     InsightsValidationError,
     SessionInsightsService,
     TranscriptNotFoundForInsightsError,
@@ -27,7 +29,14 @@ def get_session_insights_service(request: Request) -> SessionInsightsService:
     return request.app.state.session_insights_service
 
 
-@router.post("/{recording_id}/insights", response_model=SessionInsightsResponse)
+@router.post(
+    "/{recording_id}/insights",
+    response_model=SessionInsightsResponse,
+    responses={
+        409: {"description": "Transcript missing or insights already being generated"},
+        504: {"description": "Insights provider timed out; safe to retry"},
+    },
+)
 def create_session_insights(
     recording_id: UUID,
     payload: SessionInsightsRequest,
@@ -55,6 +64,19 @@ def create_session_insights(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(error),
+        ) from error
+    except InsightsInProgressError as error:
+        logger.info("insights_in_progress recording_id=%s", recording_id)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except InsightsTimeoutError as error:
+        logger.error(
+            "insights_request_timeout recording_id=%s duration_ms=%s",
+            recording_id,
+            round((monotonic() - started_at) * 1000),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Session insights took too long. Please try again.",
         ) from error
     except InsightsProviderError as error:
         logger.error(
