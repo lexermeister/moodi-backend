@@ -1,5 +1,19 @@
 # Moodi backend
 
+## Browser client support
+
+The web-submission branch accepts browser WebM audio uploads and transcription requests, in
+addition to the existing M4A/WAV paths. Set `CORS_ORIGINS` to a JSON array of the exact web frontend
+origins; an empty list keeps cross-origin access disabled. The example configuration includes
+localhost development on port 8081 and the local production preview on port 4174. Browser clients
+use the same multipart `file` field, transcript, insight, and reviewed-summary endpoints.
+Docker Compose forwards `CORS_ORIGINS` from `.env`, defaulting to no allowed browser origins.
+
+`OPENAI_API_KEY` remains server-only. The current browser wizard's optional `thoughts` and
+`actions_taken` answers and steps are persisted with mood entries. Enjoyable-activity endpoints
+are not implemented by these changes. Upload screening remains extension/MIME-based; WebM has
+the same 25 MiB transcription cap as other supported formats.
+
 Moodi is a small FastAPI service that receives audio recordings from the Moodi mobile app, saves
 them to local storage, and transcribes one- or two-speaker M4A or WAV recordings with OpenAI
 `gpt-4o-transcribe-diarize`. A second structured model call maps the diarized speakers to

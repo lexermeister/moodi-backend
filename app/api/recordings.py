@@ -23,7 +23,7 @@ def get_recording_storage(request: Request) -> RecordingStorage:
 @router.post("", response_model=RecordingResponse, status_code=status.HTTP_201_CREATED)
 def create_recording(
     request: Request,
-    file: Annotated[UploadFile, File(description="M4A, AAC, or WAV audio file")],
+    file: Annotated[UploadFile, File(description="M4A, AAC, WAV, or WebM audio file")],
 ) -> RecordingResponse:
     storage = get_recording_storage(request)
 

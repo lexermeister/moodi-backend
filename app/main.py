@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     actions,
@@ -93,6 +94,13 @@ def create_app(
             logger.info("application_stopped")
 
     application = FastAPI(title="Moodi API", lifespan=lifespan)
+    if application_settings.cors_origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=application_settings.cors_origins,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            allow_headers=["Content-Type"],
+        )
     application.include_router(health.router)
     application.include_router(recordings.router)
     application.include_router(transcriptions.router)

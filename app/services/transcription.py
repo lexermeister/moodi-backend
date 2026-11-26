@@ -20,7 +20,7 @@ from app.services.transcript_store import (
 )
 
 OPENAI_MAX_FILE_BYTES = 25 * 1024 * 1024
-SUPPORTED_EXTENSIONS = {".m4a", ".wav"}
+SUPPORTED_EXTENSIONS = {".m4a", ".wav", ".webm"}
 MAX_SPEAKER_COUNT = 2
 ROLE_ATTRIBUTION_PROMPT_VERSION = "v1"
 ROLE_ATTRIBUTION_INSTRUCTIONS = """\
@@ -407,7 +407,7 @@ class TranscriptionService:
     def _validate_recording(recording_path: Path) -> None:
         if recording_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             raise UnsupportedTranscriptionFormatError(
-                "Only M4A and WAV recordings can be transcribed"
+                "Only M4A, WAV, and WebM recordings can be transcribed"
             )
         if recording_path.stat().st_size > OPENAI_MAX_FILE_BYTES:
             raise RecordingTooLargeForTranscriptionError(

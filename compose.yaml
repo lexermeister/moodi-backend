@@ -5,6 +5,7 @@ services:
       - "8000:8000"
     environment:
       APP_ENV: development
+      CORS_ORIGINS: ${CORS_ORIGINS:-[]}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       RECORDINGS_DIR: /app/data/recordings
       MAX_UPLOAD_MB: 100

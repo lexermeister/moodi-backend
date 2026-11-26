@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    cors_origins: list[str] = Field(default_factory=list)
     transcription_fixture_path: Path | None = None
 
     @field_validator("transcription_fixture_path", mode="before")

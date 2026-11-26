@@ -16,7 +16,7 @@ atomic finalization complete.
 
 OpenAI integration belongs in `app/services/transcription.py`. Keep provider errors out of API
 responses, never log or commit `OPENAI_API_KEY`, and mock the OpenAI client in automated tests.
-Transcription is synchronous for now and supports two-speaker M4A and WAV recordings up to 25 MB.
+Transcription is synchronous for now and supports M4A, WAV, and browser WebM recordings up to 25 MB.
 Every completed transcript must contain speaker-labeled turns normalized to `speaker_1` and
 `speaker_2`; reject results that do not contain exactly two labeled speakers.
 

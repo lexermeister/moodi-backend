@@ -9,6 +9,7 @@ from fastapi import UploadFile
 CHUNK_SIZE_BYTES = 1024 * 1024
 
 ALLOWED_CONTENT_TYPES_BY_EXTENSION = {
+    ".webm": {"audio/webm", "video/webm"},
     ".aac": {"audio/aac", "audio/x-aac", "audio/vnd.dlna.adts"},
     ".m4a": {"audio/m4a", "audio/mp4", "audio/x-m4a"},
     ".wav": {"audio/vnd.wave", "audio/wav", "audio/wave", "audio/x-wav"},
@@ -114,7 +115,7 @@ class RecordingStorage:
 
         if allowed_content_types is None or content_type not in allowed_content_types:
             raise InvalidRecordingTypeError(
-                "Only M4A, AAC, and WAV uploads with a matching audio MIME type are supported"
+                "Only M4A, AAC, WAV, and WebM uploads with a matching audio MIME type are supported"
             )
 
         return extension
