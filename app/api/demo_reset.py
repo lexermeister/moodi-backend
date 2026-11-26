@@ -15,10 +15,15 @@ def restart_demo(request: Request) -> Response:
     try:
         DemoResetService(settings.recordings_path, settings.fixture_path).reset()
     except DemoResetError as error:
-        logger.error("demo_reset_failed error_type=%s", type(error.__cause__).__name__)
+        logger.error(
+            "Could not clear the local demo data. | event=demo_reset_failed error_type=%s",
+            type(error.__cause__).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not clear demo data",
         ) from error
-    logger.info("demo_reset_completed")
+    logger.info(
+        "Cleared the local demo data; the demo is ready to restart. | event=demo_reset_completed"
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

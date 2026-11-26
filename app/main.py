@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     actions,
@@ -86,9 +87,9 @@ def create_app(
             application_settings.recordings_path, action_service
         )
         logger.info(
-            "application_started app_env=%s recordings_dir=%s max_upload_mb=%s "
-            "transcription_model=%s role_attribution_model=%s insights_model=%s "
-            "insights_reasoning_effort=%s "
+            "Moodi backend started and is ready to accept requests. | event=application_started "
+            "app_env=%s recordings_dir=%s max_upload_mb=%s transcription_model=%s "
+            "role_attribution_model=%s insights_model=%s insights_reasoning_effort=%s "
             "openai_configured=%s",
             application_settings.app_env,
             application_settings.recordings_path,
@@ -102,9 +103,16 @@ def create_app(
         try:
             yield
         finally:
-            logger.info("application_stopped")
+            logger.info("Moodi backend shut down. | event=application_stopped")
 
     application = FastAPI(title="Moodi API", lifespan=lifespan)
+    if application_settings.cors_allowed_origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=application_settings.cors_allowed_origins,
+            allow_methods=["GET", "POST", "PUT", "DELETE"],
+            allow_headers=["Content-Type"],
+        )
     application.include_router(health.router)
     application.include_router(recordings.router)
     application.include_router(transcriptions.router)

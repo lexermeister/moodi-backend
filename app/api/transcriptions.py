@@ -35,26 +35,42 @@ def get_transcription_service(request: Request) -> TranscriptionService:
 @router.post("/{recording_id}/transcription", response_model=TranscriptionResponse)
 def create_transcription(recording_id: UUID, request: Request) -> TranscriptionResponse:
     started_at = monotonic()
-    logger.info("transcription_started recording_id=%s", recording_id)
+    logger.info(
+        "Starting transcription for the recording. | event=transcription_started recording_id=%s",
+        recording_id,
+    )
 
     try:
         recording_path = get_recording_storage(request).find(recording_id)
         completed = get_transcription_service(request).transcribe(recording_id, recording_path)
     except RecordingNotFoundError as error:
-        logger.warning("transcription_rejected recording_id=%s reason=not_found", recording_id)
+        logger.warning(
+            "Cannot transcribe the recording because it was not found. | "
+            "event=transcription_rejected recording_id=%s reason=not_found",
+            recording_id,
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except TranscriptionFixtureError as error:
-        logger.warning("transcription_fixture_failed recording_id=%s", recording_id)
+        logger.warning(
+            "Could not load the configured development transcript fixture. | "
+            "event=transcription_fixture_failed recording_id=%s",
+            recording_id,
+        )
         raise HTTPException(status_code=503, detail=str(error)) from error
     except RecordingTooLargeForTranscriptionError as error:
-        logger.warning("transcription_rejected recording_id=%s reason=too_large", recording_id)
+        logger.warning(
+            "Cannot transcribe the recording because it exceeds the 25 MB provider limit. | "
+            "event=transcription_rejected recording_id=%s reason=too_large",
+            recording_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=str(error),
         ) from error
     except UnsupportedTranscriptionFormatError as error:
         logger.warning(
-            "transcription_rejected recording_id=%s reason=unsupported_media_type",
+            "Cannot transcribe the recording because only M4A and WAV are supported. | "
+            "event=transcription_rejected recording_id=%s reason=unsupported_media_type",
             recording_id,
         )
         raise HTTPException(
@@ -63,7 +79,9 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except TranscriptionNotConfiguredError as error:
         logger.error(
-            "transcription_unavailable recording_id=%s reason=not_configured", recording_id
+            "Transcription is unavailable because OpenAI is not configured. | "
+            "event=transcription_unavailable recording_id=%s reason=not_configured",
+            recording_id,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -71,7 +89,8 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except NoSpeechDetectedError as error:
         logger.warning(
-            "transcription_rejected recording_id=%s reason=no_speech duration_ms=%s",
+            "Cannot create a transcript because no speech was detected. | "
+            "event=transcription_rejected recording_id=%s reason=no_speech duration_ms=%s",
             recording_id,
             round((monotonic() - started_at) * 1000),
         )
@@ -81,7 +100,8 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except DiarizationValidationError as error:
         logger.warning(
-            "transcription_rejected recording_id=%s reason=%s duration_ms=%s",
+            "Cannot create a transcript because speaker labels failed validation. | "
+            "event=transcription_rejected recording_id=%s reason=%s duration_ms=%s",
             recording_id,
             error.reason,
             round((monotonic() - started_at) * 1000),
@@ -92,7 +112,8 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except AmbiguousRoleAttributionError as error:
         logger.warning(
-            "role_attribution_ambiguous recording_id=%s duration_ms=%s",
+            "Could not reliably identify the therapist and client speakers. | "
+            "event=role_attribution_ambiguous recording_id=%s duration_ms=%s",
             recording_id,
             round((monotonic() - started_at) * 1000),
         )
@@ -102,7 +123,8 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except RoleAttributionProviderError as error:
         logger.error(
-            "role_attribution_provider_failed recording_id=%s provider_error_type=%s "
+            "OpenAI request to identify therapist and client speakers failed. | "
+            "event=role_attribution_provider_failed recording_id=%s provider_error_type=%s "
             "status_code=%s request_id=%s duration_ms=%s",
             recording_id,
             error.provider_error_type,
@@ -116,8 +138,8 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except TranscriptionProviderError as error:
         logger.error(
-            "transcription_provider_failed recording_id=%s provider_error_type=%s "
-            "status_code=%s request_id=%s duration_ms=%s",
+            "OpenAI audio transcription request failed. | event=transcription_provider_failed "
+            "recording_id=%s provider_error_type=%s status_code=%s request_id=%s duration_ms=%s",
             recording_id,
             error.provider_error_type,
             error.status_code,
@@ -130,7 +152,8 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
     except TranscriptStorageError as error:
         logger.error(
-            "transcript_save_failed recording_id=%s error_type=%s cause_type=%s",
+            "Could not save the completed transcript to local storage. | "
+            "event=transcript_save_failed recording_id=%s error_type=%s cause_type=%s",
             recording_id,
             type(error).__name__,
             type(error.__cause__).__name__ if error.__cause__ else None,
@@ -141,7 +164,8 @@ def create_transcription(recording_id: UUID, request: Request) -> TranscriptionR
         ) from error
 
     logger.info(
-        "transcription_completed recording_id=%s model=%s role_model=%s "
+        "Transcription completed; the saved transcript is ready to use. | "
+        "event=transcription_completed recording_id=%s model=%s role_model=%s "
         "speaker_count=%s turn_count=%s language_count=%s duration_ms=%s",
         recording_id,
         completed.model,

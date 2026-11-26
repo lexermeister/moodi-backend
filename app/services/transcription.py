@@ -142,7 +142,8 @@ class RoleAttributionService:
     ) -> RoleAttribution:
         started_at = monotonic()
         logger.info(
-            "role_attribution_started recording_id=%s model=%s",
+            "Asking OpenAI to identify the therapist and client speakers. | "
+            "event=role_attribution_started recording_id=%s model=%s",
             recording_id,
             self.model,
         )
@@ -187,9 +188,11 @@ class RoleAttributionService:
             raise AmbiguousRoleAttributionError("Could not determine client and therapist roles")
 
         logger.info(
-            "role_attribution_completed recording_id=%s model=%s duration_ms=%s",
+            "Identified the therapist and client speakers. | event=role_attribution_completed "
+            "recording_id=%s model=%s request_id=%s duration_ms=%s",
             recording_id,
             self.model,
+            getattr(response, "_request_id", None),
             round((monotonic() - started_at) * 1000),
         )
         return RoleAttribution(
@@ -222,7 +225,8 @@ class OpenAISessionInsightsGenerator:
         started_at = monotonic()
         client_request_id = str(uuid4())
         logger.info(
-            "insights_provider_started recording_id=%s model=%s client_request_id=%s "
+            "Asking OpenAI to generate session insights from the transcript. | "
+            "event=insights_provider_started recording_id=%s model=%s client_request_id=%s "
             "timeout_seconds=%s",
             recording_id,
             self.model,
@@ -253,8 +257,11 @@ class OpenAISessionInsightsGenerator:
         except Exception as error:
             timed_out = isinstance(error, (APITimeoutError, httpx.TimeoutException, TimeoutError))
             logger.error(
-                "%s recording_id=%s model=%s client_request_id=%s "
+                "%s | event=%s recording_id=%s model=%s client_request_id=%s "
                 "provider_error_type=%s status_code=%s request_id=%s duration_ms=%s",
+                "OpenAI session insights request timed out; no automatic timeout retry will run."
+                if timed_out
+                else "OpenAI session insights request failed.",
                 "insights_provider_timeout" if timed_out else "insights_provider_error",
                 recording_id,
                 self.model,
@@ -281,7 +288,8 @@ class OpenAISessionInsightsGenerator:
             )
 
         logger.info(
-            "insights_provider_completed recording_id=%s model=%s client_request_id=%s "
+            "Received structured session insights from OpenAI; evidence validation is next. | "
+            "event=insights_provider_completed recording_id=%s model=%s client_request_id=%s "
             "request_id=%s duration_ms=%s",
             recording_id,
             self.model,
@@ -323,12 +331,24 @@ class TranscriptionService:
             return self._transcribe_fixture(recording_id)
         existing = self.transcript_store.load(recording_id)
         if existing is not None:
-            logger.info("transcription_cache_hit recording_id=%s", recording_id)
+            logger.info(
+                "Reusing the saved transcript; no OpenAI request is needed. | "
+                "event=transcription_cache_hit recording_id=%s",
+                recording_id,
+            )
             return existing
 
         self._validate_recording(recording_path)
         client = self._get_client()
 
+        started_at = monotonic()
+        logger.info(
+            "Sending recording to OpenAI for transcription and speaker labeling. | "
+            "event=transcription_provider_started recording_id=%s model=%s size_bytes=%s",
+            recording_id,
+            self.model,
+            recording_path.stat().st_size,
+        )
         try:
             with recording_path.open("rb") as audio_file:
                 response = client.audio.transcriptions.create(
@@ -345,6 +365,15 @@ class TranscriptionService:
                 request_id=getattr(error, "request_id", None),
             ) from error
 
+        logger.info(
+            "Received audio transcription from OpenAI; validating speaker labels next. | "
+            "event=transcription_provider_completed recording_id=%s model=%s "
+            "request_id=%s duration_ms=%s",
+            recording_id,
+            self.model,
+            getattr(response, "_request_id", None),
+            round((monotonic() - started_at) * 1000),
+        )
         diarized_turns = self._normalize_turns(response)
         speaker_count = len({turn.speaker for turn in diarized_turns})
         if speaker_count == 1:
@@ -359,7 +388,8 @@ class TranscriptionService:
             role_model = None
             role_prompt_version = None
             logger.info(
-                "role_attribution_skipped recording_id=%s reason=single_speaker",
+                "Skipping role attribution because only one speaker was detected. | "
+                "event=role_attribution_skipped recording_id=%s reason=single_speaker",
                 recording_id,
             )
         else:
@@ -422,7 +452,11 @@ class TranscriptionService:
             completed_at=datetime.now(UTC),
         )
         self.transcript_store.save(completed)
-        logger.info("transcription_fixture_used recording_id=%s", recording_id)
+        logger.info(
+            "Saved the development transcript fixture in place of an OpenAI transcription. | "
+            "event=transcription_fixture_used recording_id=%s",
+            recording_id,
+        )
         return completed
 
     def _get_client(self) -> TranscriptionClient:

@@ -22,6 +22,13 @@ from app.services.activity_attempts import (
 router = APIRouter(tags=["activity attempts"])
 logger = get_logger("api.activity_attempts")
 
+_ACTIVITY_OPERATIONS = {
+    "activity_suggestions_failed": "load activity suggestions",
+    "activity_attempts_list_failed": "list activity attempts",
+    "activity_attempt_load_failed": "load the activity attempt",
+    "activity_attempt_save_failed": "save the activity attempt",
+}
+
 
 def _service(request: Request) -> ActivityAttemptService:
     return request.app.state.activity_attempt_service
@@ -37,7 +44,12 @@ def _raise(error: Exception, event: str) -> Never:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
         ) from error
     if isinstance(error, (ActivityAttemptStorageError, ActionStorageError)):
-        logger.error("%s error_type=%s", event, type(error).__name__)
+        logger.error(
+            "Could not %s because local storage failed. | event=%s error_type=%s",
+            _ACTIVITY_OPERATIONS[event],
+            event,
+            type(error).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not access activity attempts",
@@ -83,7 +95,8 @@ def save_activity_attempt(
     except Exception as error:
         _raise(error, "activity_attempt_save_failed")
     logger.info(
-        "activity_attempt_saved action_id=%s attempt_id=%s status=%s revision=%s",
+        "Saved the activity attempt. | event=activity_attempt_saved action_id=%s "
+        "attempt_id=%s status=%s revision=%s",
         action_id,
         attempt_id,
         attempt.status,

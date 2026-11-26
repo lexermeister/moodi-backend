@@ -35,6 +35,23 @@ from app.services.recording_storage import RecordingNotFoundError, RecordingStor
 router = APIRouter(tags=["actions"])
 logger = get_logger("api.actions")
 
+_ACTION_OPERATIONS = {
+    "action_candidate_review_failed": "save the proposed action review",
+    "action_review_confirmation_failed": "confirm the action reviews",
+    "action_review_confirmation_load_failed": "load the action review confirmation",
+    "action_candidate_review_load_failed": "load the proposed action review",
+    "action_candidate_resolution_failed": "resolve the proposed action against existing actions",
+    "actions_list_failed": "list actions",
+    "action_load_failed": "load the action",
+    "action_delete_failed": "delete the action and its associated data",
+    "mood_entry_draft_failed": "save the mood entry draft",
+    "mood_entry_confirm_failed": "confirm the mood entry",
+    "mood_entry_amend_failed": "amend the mood entry",
+    "mood_entry_delete_failed": "delete the mood entry",
+    "mood_entries_list_failed": "list mood entries",
+    "mood_entries_export_failed": "export mood entries",
+}
+
 
 def get_action_service(request: Request) -> ActionService:
     return request.app.state.action_service
@@ -50,14 +67,20 @@ def _raise_action_error(error: Exception, *, event: str) -> Never:
     if isinstance(error, ActionConflictError):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     if isinstance(error, ActionValidationError):
-        logger.warning("%s reason=%s", event, error.reason)
+        logger.warning(
+            "Could not %s because action data failed validation. | event=%s reason=%s",
+            _ACTION_OPERATIONS[event],
+            event,
+            error.reason,
+        )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(error),
         ) from error
     if isinstance(error, ActionStorageError):
         logger.error(
-            "%s error_type=%s cause_type=%s",
+            "Could not %s because local storage failed. | event=%s error_type=%s cause_type=%s",
+            _ACTION_OPERATIONS[event],
             event,
             type(error).__name__,
             type(error.__cause__).__name__ if error.__cause__ else None,
@@ -97,7 +120,8 @@ def review_record_mood_candidate(
         _raise_action_error(error, event="action_candidate_review_failed")
 
     logger.info(
-        "action_candidate_reviewed recording_id=%s disposition=%s",
+        "Saved the review decision for a proposed action. | event=action_candidate_reviewed "
+        "recording_id=%s disposition=%s",
         recording_id,
         review.disposition,
     )
@@ -126,7 +150,8 @@ def confirm_recording_actions(
     ) as error:
         _raise_action_error(error, event="action_review_confirmation_failed")
     logger.info(
-        "action_reviews_confirmed recording_id=%s action_count=%s",
+        "Confirmed the action reviews for the recording. | event=action_reviews_confirmed "
+        "recording_id=%s action_count=%s",
         recording_id,
         len(confirmation.action_ids),
     )
@@ -238,7 +263,8 @@ def delete_mood_action(action_id: UUID, request: Request) -> Response:
     except (ActionNotFoundError, ActionConflictError, ActionStorageError) as error:
         _raise_action_error(error, event="action_delete_failed")
     logger.info(
-        "action_deleted action_id=%s recording_id=%s entry_count=%s",
+        "Deleted the action and its associated entries and drafts. | event=action_deleted "
+        "action_id=%s recording_id=%s entry_count=%s",
         action_id,
         action.recording_id,
         entry_count,

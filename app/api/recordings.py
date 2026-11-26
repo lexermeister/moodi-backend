@@ -30,23 +30,33 @@ def create_recording(
     try:
         saved = storage.save(file)
     except EmptyRecordingError as error:
-        logger.warning("recording_upload_rejected reason=empty")
+        logger.warning(
+            "Rejected recording upload because the audio file is empty. | "
+            "event=recording_upload_rejected reason=empty"
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
     except RecordingTooLargeError as error:
-        logger.warning("recording_upload_rejected reason=too_large")
+        logger.warning(
+            "Rejected recording upload because it exceeds the upload size limit. | "
+            "event=recording_upload_rejected reason=too_large"
+        )
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=str(error),
         ) from error
     except InvalidRecordingTypeError as error:
-        logger.warning("recording_upload_rejected reason=unsupported_media_type")
+        logger.warning(
+            "Rejected recording upload because the audio format is unsupported. | "
+            "event=recording_upload_rejected reason=unsupported_media_type"
+        )
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=str(error),
         ) from error
     except RecordingStorageError as error:
         logger.error(
-            "recording_save_failed error_type=%s cause_type=%s",
+            "Could not save the uploaded recording to local storage. | "
+            "event=recording_save_failed error_type=%s cause_type=%s",
             type(error).__name__,
             type(error.__cause__).__name__ if error.__cause__ else None,
         )
@@ -58,7 +68,8 @@ def create_recording(
         file.file.close()
 
     logger.info(
-        "recording_saved recording_id=%s extension=%s size_bytes=%s",
+        "Recording upload saved durably to local storage. | event=recording_saved "
+        "recording_id=%s extension=%s size_bytes=%s",
         saved.recording_id,
         saved.filename.rsplit(".", maxsplit=1)[-1],
         saved.size_bytes,

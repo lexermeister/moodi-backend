@@ -47,11 +47,16 @@ def get_session_insights_review(
     except InsightsReviewDraftNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except InsightsReviewConflictError as error:
-        logger.warning("insights_review_stale recording_id=%s", recording_id)
+        logger.warning(
+            "Cannot load the insights review because its source draft has changed. | "
+            "event=insights_review_stale recording_id=%s",
+            recording_id,
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except InsightsReviewStorageError as error:
         logger.error(
-            "insights_review_load_failed recording_id=%s error_type=%s cause_type=%s",
+            "Could not load the saved session insights review from local storage. | "
+            "event=insights_review_load_failed recording_id=%s error_type=%s cause_type=%s",
             recording_id,
             type(error).__name__,
             type(error.__cause__).__name__ if error.__cause__ else None,
@@ -62,7 +67,8 @@ def get_session_insights_review(
         ) from error
 
     logger.info(
-        "insights_review_loaded recording_id=%s draft_id=%s",
+        "Loaded the saved session insights review. | event=insights_review_loaded "
+        "recording_id=%s draft_id=%s",
         recording_id,
         review.draft_id,
     )
@@ -86,11 +92,16 @@ def save_session_insights_review(
     except InsightsReviewDraftNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except InsightsReviewConflictError as error:
-        logger.warning("insights_review_conflict recording_id=%s", recording_id)
+        logger.warning(
+            "Cannot save the insights review because its source draft has changed. | "
+            "event=insights_review_conflict recording_id=%s",
+            recording_id,
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except InsightsReviewValidationError as error:
         logger.warning(
-            "insights_review_rejected recording_id=%s reason=%s",
+            "Rejected the session insights review because validation failed. | "
+            "event=insights_review_rejected recording_id=%s reason=%s",
             recording_id,
             error.reason,
         )
@@ -100,7 +111,8 @@ def save_session_insights_review(
         ) from error
     except InsightsReviewStorageError as error:
         logger.error(
-            "insights_review_save_failed recording_id=%s error_type=%s cause_type=%s",
+            "Could not save the session insights review to local storage. | "
+            "event=insights_review_save_failed recording_id=%s error_type=%s cause_type=%s",
             recording_id,
             type(error).__name__,
             type(error.__cause__).__name__ if error.__cause__ else None,
@@ -112,7 +124,8 @@ def save_session_insights_review(
 
     items = [item for section in review.sections for item in section.items]
     logger.info(
-        "insights_review_saved recording_id=%s draft_id=%s retained_count=%s "
+        "Saved the session insights review and its item decisions. | "
+        "event=insights_review_saved recording_id=%s draft_id=%s retained_count=%s "
         "edited_count=%s removed_count=%s",
         recording_id,
         review.draft_id,

@@ -21,6 +21,12 @@ from app.services.practice_attempts import (
 router = APIRouter(tags=["practice attempts"])
 logger = get_logger("api.practice_attempts")
 
+_PRACTICE_OPERATIONS = {
+    "practice_attempts_list_failed": "list practice attempts",
+    "practice_attempt_load_failed": "load the practice attempt",
+    "practice_attempt_save_failed": "save the practice attempt",
+}
+
 
 def _service(request: Request) -> PracticeAttemptService:
     return request.app.state.practice_attempt_service
@@ -36,7 +42,12 @@ def _raise(error: Exception, event: str) -> Never:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
         ) from error
     if isinstance(error, (PracticeAttemptStorageError, ActionStorageError)):
-        logger.error("%s error_type=%s", event, type(error).__name__)
+        logger.error(
+            "Could not %s because local storage failed. | event=%s error_type=%s",
+            _PRACTICE_OPERATIONS[event],
+            event,
+            type(error).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not access practice attempts",
@@ -73,7 +84,8 @@ def save_practice_attempt(
     except Exception as error:
         _raise(error, "practice_attempt_save_failed")
     logger.info(
-        "practice_attempt_saved action_id=%s attempt_id=%s status=%s revision=%s",
+        "Saved the practice attempt. | event=practice_attempt_saved action_id=%s "
+        "attempt_id=%s status=%s revision=%s",
         action_id,
         attempt_id,
         attempt.status,

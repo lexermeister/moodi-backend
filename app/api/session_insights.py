@@ -43,7 +43,11 @@ def create_session_insights(
     request: Request,
 ) -> SessionInsightsResponse:
     started_at = monotonic()
-    logger.info("insights_request_started recording_id=%s", recording_id)
+    logger.info(
+        "Processing a request for session insights. | event=insights_request_started "
+        "recording_id=%s",
+        recording_id,
+    )
 
     try:
         get_recording_storage(request).find(recording_id)
@@ -52,25 +56,40 @@ def create_session_insights(
             payload.session_date,
         )
     except RecordingNotFoundError as error:
-        logger.warning("insights_rejected recording_id=%s reason=recording_not_found", recording_id)
+        logger.warning(
+            "Cannot generate session insights because the recording was not found. | "
+            "event=insights_rejected recording_id=%s reason=recording_not_found",
+            recording_id,
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except TranscriptNotFoundForInsightsError as error:
         logger.warning(
-            "insights_rejected recording_id=%s reason=transcript_not_found", recording_id
+            "Cannot generate session insights until a transcript has been saved. | "
+            "event=insights_rejected recording_id=%s reason=transcript_not_found",
+            recording_id,
         )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except InsightsNotConfiguredError as error:
-        logger.error("insights_unavailable recording_id=%s reason=not_configured", recording_id)
+        logger.error(
+            "Session insights are unavailable because OpenAI is not configured. | "
+            "event=insights_unavailable recording_id=%s reason=not_configured",
+            recording_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(error),
         ) from error
     except InsightsInProgressError as error:
-        logger.info("insights_in_progress recording_id=%s", recording_id)
+        logger.info(
+            "Session insights are already being generated; rejected the duplicate request. | "
+            "event=insights_in_progress recording_id=%s",
+            recording_id,
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except InsightsTimeoutError as error:
         logger.error(
-            "insights_request_timeout recording_id=%s duration_ms=%s",
+            "Session insights request timed out; the client can retry. | "
+            "event=insights_request_timeout recording_id=%s duration_ms=%s",
             recording_id,
             round((monotonic() - started_at) * 1000),
         )
@@ -80,7 +99,8 @@ def create_session_insights(
         ) from error
     except InsightsProviderError as error:
         logger.error(
-            "insights_provider_failed recording_id=%s provider_error_type=%s status_code=%s "
+            "Could not generate session insights because the OpenAI request failed. | "
+            "event=insights_provider_failed recording_id=%s provider_error_type=%s status_code=%s "
             "request_id=%s duration_ms=%s",
             recording_id,
             error.provider_error_type,
@@ -94,7 +114,8 @@ def create_session_insights(
         ) from error
     except InsightsValidationError as error:
         logger.error(
-            "insights_generation_invalid recording_id=%s reason=%s duration_ms=%s",
+            "Session insights generation failed validation; no new insights were saved. | "
+            "event=insights_generation_invalid recording_id=%s reason=%s duration_ms=%s",
             recording_id,
             error.reason,
             round((monotonic() - started_at) * 1000),
@@ -105,7 +126,8 @@ def create_session_insights(
         ) from error
     except InsightsStorageError as error:
         logger.error(
-            "insights_storage_failed recording_id=%s error_type=%s cause_type=%s",
+            "Could not read or save session insights in local storage. | "
+            "event=insights_storage_failed recording_id=%s error_type=%s cause_type=%s",
             recording_id,
             type(error).__name__,
             type(error.__cause__).__name__ if error.__cause__ else None,
@@ -116,7 +138,8 @@ def create_session_insights(
         ) from error
 
     logger.info(
-        "insights_request_completed recording_id=%s source_version=%s prompt_version=%s "
+        "Session insights request completed; returning the saved insights. | "
+        "event=insights_request_completed recording_id=%s source_version=%s prompt_version=%s "
         "model=%s duration_ms=%s",
         recording_id,
         completed.source_version,

@@ -225,7 +225,9 @@ class SessionInsightsService:
             and cached.request_fingerprint == request_fingerprint
         ):
             logger.info(
-                "insights_cache_hit recording_id=%s source_version=%s prompt_version=%s model=%s",
+                "Reusing saved session insights because the input and generation settings match. | "
+                "event=insights_cache_hit recording_id=%s source_version=%s prompt_version=%s "
+                "model=%s",
                 recording_id,
                 source_version,
                 SESSION_INSIGHTS_PROMPT_VERSION,
@@ -235,7 +237,8 @@ class SessionInsightsService:
 
         started_at = monotonic()
         logger.info(
-            "insights_started recording_id=%s source_version=%s prompt_version=%s model=%s",
+            "Generating new session insights; no matching saved result is available. | "
+            "event=insights_started recording_id=%s source_version=%s prompt_version=%s model=%s",
             recording_id,
             source_version,
             SESSION_INSIGHTS_PROMPT_VERSION,
@@ -257,11 +260,13 @@ class SessionInsightsService:
                 ):
                     raise
                 logger.warning(
-                    "insights_provider_response_invalid recording_id=%s provider_error_type=%s "
-                    "attempt=%s",
+                    "OpenAI returned an invalid session insights response; retrying generation. | "
+                    "event=insights_provider_response_invalid recording_id=%s "
+                    "provider_error_type=%s attempt=%s max_attempts=%s",
                     recording_id,
                     error.provider_error_type,
                     attempt,
+                    MAX_GENERATION_ATTEMPTS,
                 )
                 continue
             candidate, omitted_mentions = self._omit_unlinked_activity_mentions(
@@ -269,7 +274,8 @@ class SessionInsightsService:
             )
             if omitted_mentions:
                 logger.warning(
-                    "insights_activity_mentions_omitted recording_id=%s count=%s attempt=%s",
+                    "Removed activity mentions without matching transcript evidence. | "
+                    "event=insights_activity_mentions_omitted recording_id=%s count=%s attempt=%s",
                     recording_id,
                     omitted_mentions,
                     attempt,
@@ -279,7 +285,9 @@ class SessionInsightsService:
             )
             if omitted_actions:
                 logger.warning(
-                    "insights_activity_candidates_omitted recording_id=%s count=%s attempt=%s",
+                    "Removed proposed activity actions without sufficient transcript support. | "
+                    "event=insights_activity_candidates_omitted recording_id=%s "
+                    "count=%s attempt=%s",
                     recording_id,
                     omitted_actions,
                     attempt,
@@ -289,7 +297,8 @@ class SessionInsightsService:
             )
             if recovered_mood:
                 logger.info(
-                    "insights_explicit_mood_candidate_recovered recording_id=%s attempt=%s",
+                    "Restored a proposed mood action from an explicit transcript commitment. | "
+                    "event=insights_explicit_mood_candidate_recovered recording_id=%s attempt=%s",
                     recording_id,
                     attempt,
                 )
@@ -297,10 +306,16 @@ class SessionInsightsService:
                 self._validate(candidate, input_data)
             except InsightsValidationError as error:
                 logger.warning(
-                    "insights_validation_failed recording_id=%s reason=%s attempt=%s",
+                    "Session insights failed evidence validation; %s. | "
+                    "event=insights_validation_failed recording_id=%s reason=%s "
+                    "attempt=%s max_attempts=%s",
+                    "retrying generation"
+                    if attempt < MAX_GENERATION_ATTEMPTS
+                    else "no attempts remain",
                     recording_id,
                     error.reason,
                     attempt,
+                    MAX_GENERATION_ATTEMPTS,
                 )
                 if attempt == MAX_GENERATION_ATTEMPTS:
                     raise
@@ -326,7 +341,8 @@ class SessionInsightsService:
         )
         self._save(completed)
         logger.info(
-            "insights_completed recording_id=%s source_version=%s model=%s fact_count=%s "
+            "Session insights passed validation and were saved to local storage. | "
+            "event=insights_completed recording_id=%s source_version=%s model=%s fact_count=%s "
             "candidate_count=%s section_count=%s duration_ms=%s",
             recording_id,
             source_version,

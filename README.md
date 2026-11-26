@@ -119,6 +119,21 @@ Audio sent for transcription leaves the local server and is processed by OpenAI.
 therapy recordings until the project's consent, privacy, retention, and production security
 requirements have been decided.
 
+## Browser access
+
+The Expo web app uses the same API as mobile. Set explicit allowed frontend origins
+in the backend environment, then restart the service:
+
+```dotenv
+CORS_ALLOWED_ORIGINS=["http://localhost:8082","https://your-demo.vercel.app"]
+```
+
+The default is an empty list, which leaves cross-origin browser access disabled.
+Use the actual frontend origin, including its scheme and port, without a trailing slash.
+Native mobile requests do not require an Origin header and continue to work as before.
+CORS does not provide authentication or visitor data isolation. Those remain required
+before opening a shared demo to unrelated testers.
+
 ## Run locally with Python
 
 Requirements:
@@ -454,11 +469,24 @@ Compose, use:
 docker compose logs --follow api
 ```
 
-Logs use stable event names such as `recording_saved`, `transcription_started`,
-`role_attribution_started`, `role_attribution_completed`, `transcription_completed`, and provider
-failure events. A recording with no detected speech or ambiguous roles is logged as a warning
-rather than an error. Logs include useful operational fields such as the server-generated recording
-ID, file size, duration, speaker and turn counts, safe provider status code, and provider request ID.
+Each message starts with a plain-English description of what is happening, followed by `|` and
+searchable `key=value` fields. Stable event names remain available as `event=...`, for example:
+
+```text
+2026-11-26 00:36:38,606 INFO moodi.services.transcription Asking OpenAI to generate session insights from the transcript. | event=insights_provider_started recording_id=28d70030-3f52-4e3f-859c-fdb5046b13f9 model=gpt-6-luna client_request_id=1a0b0f6b-2506-4975-9b39-f69d867d54d0 timeout_seconds=60.0
+```
+
+Logs describe application startup and shutdown, recording uploads, transcription, speaker role
+attribution, insights generation and review, actions, activity and practice attempts, and demo
+resets. Provider start and completion messages show when the backend is waiting on OpenAI and
+when it moves on to validation. Cache messages explain when saved results are reused, and
+validation failures indicate whether generation will retry or has exhausted its attempts.
+
+A recording with no detected speech or ambiguous roles is logged as a warning rather than an
+error. Operational fields retain the server-generated recording ID, file size, duration, speaker
+and turn counts, safe provider status code, and provider request ID where available. A provider
+completion means a response arrived; transcription and insights completion messages are emitted
+only after validation and local saving succeed.
 
 Set `LOG_LEVEL` in `.env` to `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. The default is
 `INFO`:
